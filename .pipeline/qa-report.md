@@ -1,101 +1,99 @@
-# QA Report — Phase 1: connect-and-core-dashboard
-
+## QA Report — Phase 2: filtered-charts
 Date: 2026-06-27
-Criteria source: `ROADMAP.md` Phase 1 acceptance checklist + `.pipeline/spec.md`
+Criteria source: `ROADMAP.md` Phase 2 acceptance criteria (5 items) + `.pipeline/spec.md` detailed requirements
 
 ---
 
-## Test Suite
+### Test Run: burnboard.test.js
 
-`node burnboard.test.js` — **82 tests: 82 passed, 0 failed**
+```
+123 tests: 123 passed, 0 failed
+```
 
-All tested areas: `isPeakHour`, `djb2hex`, `modelFamily`, `buildWindows` (gap logic + dedup simulation), `buildSessions`, `getMondayUTC`, `clamp`, Start Check state machine (boundary conditions), `today_vs_avg` denominator, `projOpusPct` + forecast states.
+All assertions pass, including the 19 Phase 2 filter/aggregation tests and 23 extended coverage tests added by Phase 2.
 
 ---
 
-## Results
-
-### ROADMAP.md Acceptance Criteria
+### Results
 
 | Criterion | Status | Evidence |
 |-----------|--------|----------|
-| Opening the file with no IDB data shows the Connect screen with tagline, trust strip, accordion, numbered steps, and the `select ~/.claude/projects` CTA | PASS | Boot logic: `if (!dh) { showScreen('connect'); return; }`. DOM has tagline verbatim (`your claude code is bleeding tokens somewhere. this tells you where.`), trust strip (all 4 items), accordion (`what can burnboard actually see?` with aria-expanded), steps (pick folder / browser reads locally / stop being surprised), CTA button (`📂 select ~/.claude/projects`). HTML line 185–226. |
-| Picking a folder runs the Sync screen with live status messages and a progress bar, then lands on the Dashboard | CANNOT-VERIFY-HEADLESS | `pickFolder()` calls `showDirectoryPicker()` — requires real browser + folder. Logic path is present: `showScreen('sync')`, status progression (`scanning .jsonl files...` → `found N turns...` → `writing to storage...` → `computing dashboard...`), `sync-progress-bar` element, privacy note verbatim, ends with `showScreen('app')`. All strings match spec exactly. |
-| Turns are parsed per section 14 rules (only `type === "assistant"`, skip zero-token and missing-id lines) and written to the `turns`, `sessions`, and `windows` stores | PASS | Static + test-verified. Parser checks `obj.type !== 'assistant'` (skip), `inp === 0 && out === 0` (skip), `!sid \|\| !ts` (skip). `buildSessions` and `buildWindows` tested by 27 test cases. IDB writes use `dbDeleteTurnsBySession` + `dbBatchPut`. HTML lines 616–695. |
-| Start Check renders the correct one of the six states (good / caution_peak / caution_budget / danger / weekend / no_data) with matching border color, headline, body, and the mono window-remaining clock | PASS | State machine tested: 16 boundary-condition assertions all pass. `renderStartCheck` uses `card-green/amber/red/muted` classes for border. All 6 headlines and bodies match spec verbatim. Window clock uses `.window-val` class with `font-family:'JetBrains Mono'` at 48px. Pulsing 6px dot with `@keyframes pulse`. HTML lines 811–882. |
-| Mini Stats row shows Current Window, Weekly Cap, and Today vs Average with the specified color thresholds and tooltips | PASS | Three cards rendered with `mono` class values. Color thresholds verified: window >2h green / 1–2h amber / <1h red; cap <60 green / 60–80 amber / >80 red; avg ≤1.0 green / ≤2.0 amber / >2.0 red. `weekly_cap_pct = max(opusPct, sonnetPct)`. `today_vs_avg = todayTok / (last30Tok/30)`, denominator always 30 (3 test assertions). All 3 tooltip strings match spec verbatim. HTML lines 884–908. |
-| Week Forecast shows the severity-colored sentence, opus/sonnet progress bars, and the community-estimate disclaimer | PASS | Three forecast states (exhausted/tight/on_track) each tested (5 test assertions). `renderForecast` emits colored sentence, two `progressRow` calls (opus/sonnet, skip if totalH===0 for API plan), disclaimer verbatim (`cap estimates are community-reported, not official anthropic numbers.`). Progress fill color: green <60 / amber 60–80 / red >80. Row text format matches spec. HTML lines 910–956. |
-| Settings overlay saves plan/billing-day/timezone to the kv store and re-renders; Wipe all data confirms then returns to Connect | PASS | `saveSettings()` writes `bb_config` via `saveConfig()` then calls `renderDashboard()`. `wipeData()` calls `confirm()` then `dbClearAll()` (clears all 5 stores in one transaction) then `showScreen('connect')`. Settings panel slides from right (`translateX(100%)` → `translateX(0)`). All 5 fields present with correct defaults (plan: max5x, billing: 1, tz: auto-detected, acc1: Primary, acc2: empty). HTML lines 990–1023. |
-| Numbers use JetBrains Mono; reload reconnects from the saved handle without re-picking (permission-granted path) | PASS | `.mono { font-family:'JetBrains Mono',monospace }` applied to all stat values, window clock, and inline spans within body copy. Boot: if `dh` exists and `queryPermission === 'granted'` → `runSync(dh)` (no picker shown). Tested path is: `openDB → loadConfig → dbGet('kv','dirHandle') → queryPermission → runSync`. HTML lines 1051–1075. |
+| Changing range or model re-renders the four sections in this phase but leaves Start Check, Mini Stats, and Forecast unchanged (per 7.4). | PASS | Filter click handler at line 1436 is a delegated listener on `#dashboard-content`. It calls ONLY `renderFilteredSections()` (line 1446). `renderDashboard()` is never called from this handler. `renderFilteredSections()` calls `loadFilteredData()` then the four render helpers — none of which touch `#start-check`, `#mini-stats`, or `#forecast` DOM nodes. `loadDataLocal()` (the unfiltered Phase 1 source) is also not called. Comment at line 1435 explicitly documents this constraint. |
+| Daily burn chart shows token bars per day in range, highlights today, and shows the empty state when the range has no usage. | PASS | `renderDailyBurn()` at line 956: empty state renders `no usage in this range` (exact copy) in a 240px container when `daily_usage.length === 0` and returns early. When data exists, today's bar gets `#FB923C` (--accent2) vs `#F97316` (--accent) for all other bars (line 974). Tooltip `title` callback appends `· today` for today's date (line 991). Y-axis ticks use `fmtTokens()` callback (K/M, line 1011). `if (!window.Chart) return` CDN guard at line 967. |
+| Heatmap renders 7x24 cells colored by token intensity, tints weekday peak columns (13-18 UTC), shows the local-timezone peak-hours note, and shows the "add more data" state under 3 days of data. | PASS | `renderHeatmap()` at line 1020. Under-3-days gate at line 1042 (`fd.days_with_data < 3`) renders exact string `add more data to see your patterns` plus the TZ note and returns. Full grid: 7 rows x 24 columns via CSS grid class `heatmap-grid` (line 198 CSS). Row mapping `rowIndex = (dow + 6) % 7` correct: Mon(dow=1) to 0, Sun(dow=0) to 6 (line 1069, commented). Log intensity formula matches spec (lines 1080-1082). Peak tint (hours 13-18, weekday rows 0-4): `linear-gradient(rgba(249,115,22,intensity), rgba(249,115,22,intensity)), rgba(251,191,36,.08)` (line 1094). Non-peak cells: solid orange alpha or transparent (line 1096). TZ note computed via `Intl.DateTimeFormat` with `timeZoneName:'short'` formatToParts (lines 1032-1038); falls back to IANA string on error. Note shown in both under-3-days path (line 1044) and full-grid path (line 1103). Test `heatmap rowIndex mapping` suite (3 assertions) all PASS. |
+| Model breakdown doughnut shows opus/sonnet/haiku/unknown segments with center total and legend; top projects shows up to 8 folders by token volume. | PASS | `renderModelBreakdown()` at line 1108: segment colors at line 1114 (opus `#A78BFA`, sonnet `#38BDF8`, haiku `#2DD4BF`, unknown `#4A4440`). Center total: absolutely-positioned `.doughnut-center` with `.mono` span (line 1128). Custom legend via `.chart-legend` / `.legend-row` / `.legend-swatch` (lines 1131-1138); Chart.js built-in legend disabled (line 1156). `renderTopProjects()` at line 1170: `indexAxis:'y'` for horizontal bar (line 1199). `top_projects` sliced to 8 in `loadFilteredData()` (line 906). Tooltip shows `tokens · N sessions` from project data (lines 1205-1207). Empty state for both: `no usage in this range` (lines 1119, 1177). `if (!window.Chart) return` CDN guards at lines 1122, 1180. Tests: `top_projects: exactly 8 projects → all 8 returned` PASS; `model_breakdown: order is opus, sonnet, haiku, unknown` PASS. |
+| All four respect the active filter selection. | PASS | All four render functions receive `fd` from `loadFilteredData()` which applies `_filter.range` cutoff then `_filter.model` family filter before computing all four data fields. The filter state `_filter` is module-level and updated by the click handler before `renderFilteredSections()` is called. Tests confirm both range and model filters exclude/include correct turns: `7d range: excludes turn 8 days old` PASS, `model=opus: keeps only opus turns` PASS, `model=haiku: keeps only haiku turns` PASS, etc. |
 
 ---
 
-### Spec Detail Checks (`.pipeline/spec.md`)
+### Critical Checks (beyond the five ACs)
 
-| Check | Status | Evidence |
-|-------|--------|----------|
-| CSS vars exact values (--bg, --accent, --green, --amber, --red, --text, all dim/bright vars) | PASS | All 16 CSS custom properties match spec 4.1 character-for-character. |
-| Orange radial glow: `radial-gradient(ellipse 55% 40% at 0% 0%, rgba(249,115,22,.08), transparent 60%)` | PASS | Present verbatim on `body::before`. |
-| Film grain: SVG feTurbulence, ~2.2% opacity | PASS | `opacity:.022` on `body::after`. |
-| Scrollbar 3px, `--mu3`, no track | PASS | `::-webkit-scrollbar{width:3px}`, thumb uses `var(--mu3)`, track background transparent. |
-| Card: bg `--s1`, `1px solid var(--bdr)`, radius 14px, padding 20–24px, hover `translateY(-1px)` | PASS | All present in `.card` rule. |
-| State-colored cards: left border 2px + dim bg | PASS | `.card-green/.card-amber/.card-red/.card-orange/.card-muted` all defined. |
-| Primary button: bg `--accent`, `#000`, radius 10px, padding `14px 28px`, Outfit 600 15px, hover brightness + shadow | PASS | All values present in `.btn-primary` and `:hover`. |
-| Secondary button: bg `--s2`, radius 8px, padding `6px 14px`, Outfit 500 13px | PASS | Present in `.btn-secondary`. |
-| DB name `burnboard_v2`, version 2, all 5 stores with exact keyPaths and indexes | PASS | `DB_NAME='burnboard_v2'`, `DB_VER=2`. All stores: `kv` (no keyPath), `turns` (autoIncrement), `sessions` (session_id), `windows` (window_id), `monthly_cache` (compound `[month_key,account_label]`). All indexes match spec 13.1. |
-| Turn record fields (all 12 from spec 13.2) | PASS | All 12 fields present in the `turn` object literal. `cwd` uses shorthand property syntax; truncated to 300 chars. `month_key = ts.substring(0,7)`. |
-| Session record fields (all 10 from spec 13.3) | PASS | `buildSessions` produces all 10 fields. Dominant model by token volume (not turn count). `project_name` from last path segment, Windows backslash-normalized. |
-| Window record fields (all 11 from spec 13.4) | PASS | `buildWindows` produces all 11 fields. `window_id = djb2hex(window_start)`. `is_complete` based on >5h from now. |
-| CAPS constants (pro/max5x/max20x), TOKENS_PER_HOUR=800000, WIN_MS=5h | PASS | Constants match spec 15.2/17 exactly: `pro:{opus:0,sonnet:60}`, `max5x:{opus:25,sonnet:210}`, `max20x:{opus:32,sonnet:360}`. |
-| Dedup guard: delete-by-session before reinsert (ponytail comment) | PASS | `dbDeleteTurnsBySession` uses `by_session` index + cursor delete. Called per session before `dbBatchPut`. Marked with `ponytail: dedup guard` comment. Test suite has 3 assertions confirming double-insert causes double-counts (confirming the guard is necessary and correctly placed). |
-| Windows full recompute each sync (ponytail comment) | PASS | After per-session dedup, fetches all stored turns and recomputes windows globally. Marked `ponytail: full recompute of windows each sync`. |
-| `getMondayUTC` formula | PASS | `day===0 ? -6 : 1-day` matches spec. 7 test assertions cover Mon/Tue/Wed/Fri/Sun/Sat + midnight result. |
-| `today_vs_avg`: denominator always 30, UTC date match | PASS | `avg = last30Tok / 30`. Ponytail note: UTC date choice. 3 test assertions. |
-| `projOpusPct = opusPct / fracElapsed`, `clamp(fracElapsed, 0.01, 1)` | PASS | 6 test assertions cover on_track/tight/exhausted + Monday-boundary clamp. |
-| Forecast sentence verbatim strings | PASS | exhausted: `opus cap hit. resets in N days (monday).` tight: `at your current pace, opus runs out [day] around [time].` on_track: `you're on track to finish the week with N% of opus remaining.` |
-| Browser support: disable CTA + amber bar on missing `showDirectoryPicker` | PASS | `if (!window.showDirectoryPicker) { connectBtn.disabled=true; warningBar.classList.add('visible'); }` Warning bar text verbatim: `folder sync needs Chrome or Edge`. |
-| AbortError on cancel picker swallowed silently | PASS | `if (e.name === 'AbortError') return;` in `pickFolder`. |
-| Phase 6 Reconnect ponytail on non-granted permission branch | PASS | Comment present: `ponytail: Phase 6 Reconnect screen handles this branch...` |
-| Placeholder tab panels (history/tips/what's-coming) with ponytail comment | PASS | Three empty `<div class="tab-panel">` elements. Ponytail comment: `history / token tips / what's coming panels are empty placeholders; built in later phases`. |
-| Tips button inert in Phase 1 with ponytail comment | PASS | `<button class="btn-secondary" title="coming soon">💬 tips</button>`. Ponytail comment present. |
-| `account_label` always `account_1_name \|\| "Primary"` in Phase 1 | PASS | `const accountLabel = _cfg.account_1_name \|\| 'Primary';` — used on all turn writes. No two-account logic present. |
-| No Chart.js, no GSAP, no API pricing constants | PASS | None present in file. |
-| Inline self-check (`console.assert` block) for isPeakHour + state machine | PASS | `selfCheck()` IIFE present with 7 `isPeakHour` and 7 state-machine assertions. Matches spec 11 requirement. |
-| skipped-line count reported in sync summary | PASS | `if (skippedLines > 0) console.log('[BurnBoard] skipped ${skippedLines} malformed lines');` — minimal text, full toast deferred to Phase 6. |
-| Incremental sync: `lastModified >= last_sync` (not strict >) | PASS | `if (f.lastModified >= lastSync) toProcess.push(fh);` — matches spec "Skip if lastModified < last_sync_timestamp". |
-| Settings re-renders dashboard after save | PASS | `saveSettings()` calls `closeSettings()` then `await renderDashboard()`. |
-| Wipe confirms + clears all 5 stores + returns to Connect | PASS | `dbClearAll()` opens a single transaction over `['kv','turns','sessions','windows','monthly_cache']` and clears all. Returns `showScreen('connect')`. |
+**AC#1 deep check — filter never re-renders Start Check / Mini Stats / Forecast:**
+Confirmed. Filter handler at line 1436 is on `#dashboard-content` (delegated). The only function it calls is `renderFilteredSections()` (line 1446). `renderDashboard()` is called only at line 719 (post-sync boot) and line 1476 (re-sync). `loadDataLocal()` is called only inside `renderDashboard()` (line 1236), never from `renderFilteredSections()` or `loadFilteredData()`. PASS.
 
----
+**Chart.js CDN-miss safety (`if (window.Chart)`):**
+- `renderDailyBurn`: guard at line 967, after the empty-state check and return, so empty state still renders on CDN miss. PASS.
+- `renderModelBreakdown`: guard at line 1122, after empty-state check and return. PASS.
+- `renderTopProjects`: guard at line 1180, after empty-state check and return. PASS.
+- `renderHeatmap`: no Chart.js used — pure CSS grid. No guard needed. PASS.
 
-## Defects Found
+**Chart destroy-before-recreate:**
+- `_dailyChart` destroyed at line 969 before `new Chart()` at line 976. PASS.
+- `_modelChart` destroyed at line 1140 before `new Chart()` at line 1142. PASS.
+- `_projChart` destroyed at line 1182 before `new Chart()` at line 1190. PASS.
+- All three handles declared at line 819, initialized to `null`. PASS.
 
-**None.** All logic paths verified statically or by the test suite.
+**Heatmap dow/hour mapping:**
+`dow = (rowIndex + 1) % 7` gives Mon=1, Tue=2, ..., Sat=6, Sun=0 (line 1069). Lookup key `${dow}-${h}` matches the key written in `loadFilteredData()` as `${dt.getUTCDay()}-${dt.getUTCHours()}` (line 869). Mapping is consistent. Tests `heatmap rowIndex mapping: Mon (dow=1) lands in row 0`, `Sun → rowIndex=6`, `Sat → rowIndex=5` all PASS.
 
-One cosmetic note (not a defect): the `caution_peak` body text reads `"peak hours active until [time]. window burns faster than usual. off-peak starts at [time]."` — the same time appears twice. This is verbatim from spec 6.1, which gives that exact copy; implementation matches what was specified.
+**Range/model aggregation correctness:**
+All 19 Phase 2 filter+aggregation tests pass. Key checks: range cutoff arithmetic, model family filtering via reused `modelFamily()`, `daily_usage` deduplication with `Set` for sessions, `top_projects` sort-desc-slice-8, `days_with_data = daily_usage.length`, `model_breakdown` family ordering and `other → unknown` remapping.
 
----
+**Filter defaults:**
+`_filter = { range: '30d', model: 'all' }` at line 816. `renderFilterBar()` marks the matching buttons with `.sel` on first render (lines 921, 924). Default-selected `30d` and `all` on load: PASS.
 
-## Genuinely Untestable Without a Browser
+**Spec string compliance (exact lowercase copy):**
+- `🔥 daily burn rate` — line 961. PASS.
+- `🌡 when you work` with subtext `amber = peak hours` — line 1040. PASS.
+- `model breakdown` — line 1116. PASS.
+- `top projects` — line 1174. PASS.
+- `no usage in this range` — lines 963, 1119, 1177. PASS.
+- `add more data to see your patterns` — line 1043. PASS.
+- Filter labels: `7d 30d 90d all` / `all opus sonnet haiku` lowercase rendered from arrays at lines 918-919. PASS.
+- Group labels `range` / `model` lowercase (lines 928, 933). PASS.
 
-The following require a live Chromium browser with a real `~/.claude/projects` folder:
+**Surgical changes / scope guard:**
+No modifications to `loadDataLocal`, `renderStartCheck`, `renderMiniStats`, `renderForecast`, the IDB layer, parsing, or boot. Phase 3+ items (insights, sessions table, cost/summary, history, reconnect) are not present. PASS.
 
-- The full sync flow (folder picker → JSONL walk → IDB write → Dashboard render)
-- The `queryPermission` auto-reconnect on reload (permission granted path)
-- Tooltip hover behavior
-- Settings overlay slide animation
-- Tab switching panel display
-- Film grain, orange glow, font loading (Google Fonts CDN)
-- Accordion open/close toggle
+**`ponytail:` comments on all spec-required simplifications:**
+CDN pin (line 10), chart font (line 821), rounded pcts (line 884), TZ short-name fallback (line 1028), log-intensity formula (line 1076), segment hex tints (line 1112). All present. PASS.
 
-All logic backing these interactions has been verified statically. The interactive paths are low-risk shell/UI wiring with no computation.
+**JetBrains Mono on numbers:**
+Chart.js `font.family:'JetBrains Mono'` set on axis ticks and tooltip fonts in all three charts. Legend values wrapped in `<span class="mono">` (line 1135). Doughnut center uses `.mono` (line 1128). PASS.
+
+**`fmtTokens()` correctness:**
+Tests: `fmtTokens: 284000 → "284K"` PASS, `1000000 → "1.0M"` PASS, `1500 → "2K"` PASS, `999 → "999"` PASS. Function at line 822. PASS.
 
 ---
 
-## Summary
+### Defects Found
 
-All 8 ROADMAP acceptance criteria are either verified PASS or are browser-only interactions whose underlying logic is fully verified. The test suite is clean at 82/82. The two load-bearing risk areas (dedup guard and state machine) are both thoroughly covered: the dedup guard has dedicated tests proving double-insert causes double-counts confirming the guard is structurally necessary, and the state machine has 16 boundary assertions including exact threshold values. No defects found. The implementation is a complete Phase 1 delivery.
+**MINOR — `d5` animation class undefined.**
+Chart section cards use class `au d5` (lines 940-944) but only `d0`-`d4` delay classes are defined in CSS (lines 177-181). `d5` falls through to no delay — all four chart cards animate in simultaneously with no stagger. This is cosmetic only; the spec marks entrance animations as "optional (not an AC)" and the cards still appear. No functional impact. Severity: cosmetic.
 
 ---
+
+### Items Untestable Headless
+
+- Actual chart canvas rendering (Chart.js draws to `<canvas>`; needs a browser with a rendering context).
+- Live filter click interaction (requires a real DOM + IDB populated with turns data).
+- `Intl.DateTimeFormat` TZ abbreviation output for user's configured timezone (output depends on OS locale and the saved `_cfg.timezone` value).
+- Doughnut center overlay positioning (absolute CSS; visual verification only).
+
+---
+
+### Summary
+
+All 5 ROADMAP acceptance criteria pass. All 123 automated assertions pass including the full Phase 2 filter/aggregation suite. The critical AC#1 isolation check passes cleanly: the filter handler is a single-line call to `renderFilteredSections()` with no path to re-rendering Start Check, Mini Stats, or Forecast. Chart.js CDN guards, chart-destroy-before-recreate, heatmap dow/hour mapping, and all required spec strings are correctly implemented. One cosmetic defect: the `d5` CSS animation delay class is missing, causing chart cards to animate without stagger. Not an AC violation.
 
 QA: PASS

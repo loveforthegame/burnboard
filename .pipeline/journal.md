@@ -50,3 +50,7 @@ note: 123/123 pass (+23 phase 2). AC#1 wiring confirmed (handler calls only rend
 ## 2026-06-27 20:45 — reviewer · feature: phase-2-filtered-charts
 status: VERDICT: SHIP
 note: hard rules pass, AC#1 holds (filter handler calls only renderFilteredSections), diff surgical +463/-1, scope guard honored, charts guarded+destroyed. non-blocking: test mirrors loadFilteredData as computeFilteredData (drift risk).
+
+## 2026-06-27 23:50 — product-qa · feature: phase-2-filtered-charts
+status: QA PASS
+note: 123/123, all 5 ACs pass, filter isolation provably clean. fixed 1 cosmetic defect: added missing .d5 stagger-delay class (last chart card now staggers in).
