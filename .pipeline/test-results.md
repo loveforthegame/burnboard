@@ -1,55 +1,89 @@
-# Test Results — Phase 2 filtered-charts
+# Test Results — Phase 3: insights-and-sessions
 
 ## Run
 
-`node burnboard.test.js` — plain Node, no framework, no deps.
+```
+node burnboard.test.js
+192 tests: 192 passed, 0 failed
+```
 
-## Result: 123 tests, 123 passed, 0 failed
-
-(Previously 100 Phase 1 + Phase 2 tests; 23 new assertions added.)
+Baseline confirmed at 177 before additions. 15 new assertions added.
 
 ---
 
 ## What was exercised
 
-### Carried forward (100 tests, all pass)
-Phase 1 coverage of `isPeakHour`, `djb2hex`, `modelFamily`, `buildWindows` (gap logic + dedup simulation), `buildSessions`, `getMondayUTC`, `clamp`, the state machine, `today_vs_avg`, and `projOpusPct` / forecast state.
+### Prior 177 assertions (verified still pass)
+All Phase 1/2 assertions intact: isPeakHour, djb2hex, modelFamily, buildWindows (gap logic + dedup), buildSessions, getMondayUTC, clamp, state machine, forecast math, filtered data pipeline (range cutoffs, model filter, daily/heatmap/model_breakdown/top_projects bucketing).
 
-Phase 2 original 18 assertions: 7d/all range cutoff, model filter (opus/sonnet), daily_usage bucketing + session dedup, daily_usage ascending sort, top_projects desc sort + 8-slice, top_projects session count, empty-cwd → "unknown", days_with_data count, model_breakdown unknown mapping + order + pct sum, heatmap day/hour bucketing + cell token summation.
+Phase 3 prior 54: fmtSessionDur (8), relWhen (7), Spiral trigger (5), Cache DANGER+WARNING (8), Peak Penalty (3), Opus Waste (5), priority/max-3 (2), session aggregation (8), context-growth/heavy-context (3), cost_by_model (4), summary (3).
 
-### New assertions (23, all pass)
+### 15 new assertions added
 
-**fmtTokens (7 assertions)**
-Raw values under 1000, the 999/1000 boundary, 1500 → "2K" (rounds), 1.0M boundary, 1.5M, and the dump-7.9 example value of 284K.
+**relWhen boundaries:**
+- Exactly 60m ago → "1h ago" (not "60m ago") — tests the `< 60` gate
+- Exactly 59m ago → ends "m ago"
+- Exactly 47h ago → "yesterday" (within the 48h window)
+- Exactly 49h ago → MMM D format (past the 48h window)
 
-**30d and 90d range cutoffs (4 assertions)**
-31-day-old turn excluded from 30d range; 29-day-old included. 91-day-old excluded from 90d range; 89-day-old included. (Only 7d and all were tested previously.)
+**fmtSessionDur boundaries:**
+- 3,599,999ms (59m 59s) → "59 min" — just under the 60-minute gate
+- 3,600,001ms → "1h 0m" — just over the gate
 
-**Heatmap rowIndex→dow mapping (4 assertions)**
-Monday turn (getUTCDay=1) stored as dow=1, which maps back to rowIndex=0 (Mon row) via `(rowIndex+1)%7`. Sunday turn (getUTCDay=0) stored as dow=0, maps to rowIndex=6 (Sun row, bottom). Saturday (dow=6) maps to rowIndex=5. Confirmed Mon and Sun turns land in distinct cells with the correct dow values, so the lookup key never collides.
+**Spiral trigger:**
+- Session with all turns >7 days ago → excluded from spiralCount (out-of-window guard)
+- Exactly 6 turns → qualifies (>5 strict; confirms the `<= 5` continue is correct)
 
-**Heatmap under-3-days gate — data path (3 assertions)**
-2 days → days_with_data < 3 (gate fires). Exactly 3 days → days_with_data = 3 (gate does not fire; grid renders). Filter-reduced case: 5 days of raw data cut to 2 by 7d range → days_with_data < 3 (filter-induced gate fires correctly).
+**Opus Waste trigger:**
+- 5 sessions with all turns 10 days ago → excluded (out-of-window guard)
 
-**model_breakdown exclusion and edge cases (3 assertions)**
-Single-family data → only that family appears (0-token families are excluded). Empty turns set → model_breakdown is empty (no division by zero). Single-family 100% case → pct is exactly 100.
+**Peak Penalty trigger:**
+- All peak-hour tokens 10 days ago → totalTok7=0 → peakPct=0 → no fire
 
-**top_projects boundary (1 assertion)**
-Exactly 8 projects → all 8 returned (slice(0,8) is non-destructive at boundary).
+**Session aggregation:**
+- Exactly 20 sessions → all 20 returned (slice(0,20) boundary)
+- Session with two turns 2.5h apart → fmtSessionDur("2h 30m") from first/last_timestamp delta
 
-**model=haiku filter (1 assertion)**
-Haiku filter keeps only haiku turns; opus turns are excluded from both daily_usage and model_breakdown.
+**cost_by_model:**
+- Sonnet cost: 2M input * $3/1M + 0.5M output * $15/1M = $13.50
+- Order guarantee: opus appears before sonnet before haiku regardless of insertion order
+
+**summary:**
+- Zero turns → all fields zero (no division errors, no undefined)
 
 ---
 
-## Static source inspection (browser/DOM — CANNOT-VERIFY-HEADLESS)
+## Threshold verification (spec §7.3 exact boundaries)
 
-These three risks from changes.md were confirmed by source reading, not execution:
+| Trigger | Boundary | Fire side | Silent side | Status |
+|---|---|---|---|---|
+| Spiral | ratio > 3.0 | 3.01 fires | 3.0 silent | PASS |
+| Spiral | >5 turns | 6 fires | 5 silent | PASS |
+| Spiral | >=3 sessions | 3 fires | 2 silent | PASS |
+| Cache DANGER | rateNow < 0.10 | 0.05 fires | 0.10 silent | PASS |
+| Cache DANGER | ratePrev > 0.25 | 0.30 fires | 0.25 silent | PASS |
+| Cache DANGER | weekTotal > 50000 | 100k fires | 50k silent | PASS |
+| Cache WARNING | rateNow < 0.15 | 0.10 fires | 0.15 silent | PASS |
+| Cache WARNING | weekTotal > 100000 | 150k fires | 100k silent | PASS |
+| Cache DANGER suppresses WARNING | one card max | danger only | no warning | PASS |
+| Peak | peak_pct > 0.50 | 0.60 fires | 0.50 silent | PASS |
+| Opus Waste | >=5 sessions | 5 fires | 4 silent | PASS |
+| Opus Waste | turn_count < 4 | 3 qualifies | 4 excluded | PASS |
 
-1. **Filter handler calls only renderFilteredSections (AC#1).** The delegated click handler at `burnboard.html` line 1436 calls `await renderFilteredSections()` at line 1446. The string `renderDashboard` does not appear in that handler body. Phase 1 sections (Start Check / Mini Stats / Forecast) are not touched on filter change.
+---
 
-2. **Chart destroy-before-recreate.** `renderDailyBurn` (line 969), `renderModelBreakdown` (line 1140), and `renderTopProjects` (line 1182) each call `.destroy()` and null the module-level handle before `new Chart(...)`. Pattern is consistent across all three functions.
+## CANNOT-VERIFY-HEADLESS (DOM-only behavior, confirmed by static inspection)
 
-3. **Heatmap rowIndex→dow lookup alignment.** Line 1069: `const dow = (rowIndex + 1) % 7`. Line 1075: lookup key `${dow}-${h}` matches the heatmap data key `${dow}-${hr}`. Mon=rowIndex 0→dow 1; Sun=rowIndex 6→dow 0. Correct per spec.
+1. **copyText 1500ms revert** — `burnboard.html` `copyText()`: `navigator.clipboard.writeText(text)`, then `btn.textContent = 'copied!'`, `btn.classList.add('copied')`, `setTimeout(() => { restore original label + remove class }, 1500)`. 1500ms confirmed in the setTimeout call. Cannot test `navigator.clipboard` under Node.
+
+2. **One-row-open-at-a-time** — module-level `let _openSession = null` toggled in the delegated click handler on `dashboard-content`. Clicking a new row calls `_openSession`'s detail `.remove()` before inserting the new detail row. A second click on the same row closes without re-opening. DOM-only; cannot unit test.
+
+3. **Insights on unfiltered path** — `computeInsights` called inside `loadDataLocal` (HTML ~line 1019), result in `d.insights`. `renderInsights(d)` called from `renderDashboard()`. The filter-bar click handler calls only `renderFilteredSections()`, never `renderDashboard()`. Static inspection confirms insights are not re-computed on filter change.
+
+4. **Sessions+Cost on filtered path** — `renderSessions` and `renderCostSummary` called only from `renderFilteredSections()`. Neither appears in `renderDashboard()` body. Confirmed by grep.
+
+5. **`window._insightCopies` global** — set synchronously inside `renderInsights` before any copy button is clickable. Array is indexed by insight position. Cannot verify under Node (window not defined), but the pattern is safe given synchronous render.
+
+---
 
 STATUS: PASS

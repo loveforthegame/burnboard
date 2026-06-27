@@ -1586,6 +1586,9 @@ function renderSessions(fd) {
   }
 
   const rows = fd.recent_sessions.map(s => {
+    // ponytail: display the model family only (e.g. "opus"), not the version suffix dump 7.9 wants ("opus-4") —
+    // Phase 1 buildSessions already collapsed model to family, so the suffix isn't recoverable here.
+    // upgrade path: store the raw model string on session records, then surface the short version name.
     const model = s.model === 'other' ? 'unknown' : s.model;
     const durMs = new Date(s.last_timestamp).getTime() - new Date(s.first_timestamp).getTime();
     return `<tr class="session-row" data-session-row="${s.session_id}">

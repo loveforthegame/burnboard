@@ -54,3 +54,29 @@ note: hard rules pass, AC#1 holds (filter handler calls only renderFilteredSecti
 ## 2026-06-27 23:50 — product-qa · feature: phase-2-filtered-charts
 status: QA PASS
 note: 123/123, all 5 ACs pass, filter isolation provably clean. fixed 1 cosmetic defect: added missing .d5 stagger-delay class (last chart card now staggers in).
+
+## 2026-06-27 23:55 — RUN START · feature: phase-3-insights-and-sessions
+request: /ship phase 3
+branch: ship/20260627-235500-phase-3-insights-sessions
+base: phase 2 (adb4554, on master)
+
+## 2026-06-27 23:56 — planner · feature: phase-3-insights-and-sessions
+status: spec written (no open questions)
+note: 4 insight triggers (unfiltered path), sessions table + cost/summary (filtered path per 7.4), §16 pricing added. 2 ponytail deviations: model family display only (phase1 lost version suffix); spiral turn-3 overlap transcribed literally.
+
+## 2026-06-28 00:02 — coder · feature: phase-3-insights-and-sessions
+status: implemented
+files: burnboard.html, burnboard.test.js (+54 = 177 total)
+note: insights unfiltered path, sessions+cost filtered path. riskiest = 4 insight trigger math + priority/max-3 selection; copy strings with newlines stored in window._insightCopies to avoid HTML-escape.
+
+## 2026-06-28 00:12 — tester · feature: phase-3-insights-and-sessions
+status: tests passed
+note: 192/192 (+15). all 12 §7.3 thresholds verified fire+silent; spiral/opus/peak window exclusion; cost math; 20-session slice. DOM/clipboard confirmed by static inspection.
+
+## 2026-06-28 00:16 — reviewer · feature: phase-3-insights-and-sessions
+status: VERDICT: BLOCK -> fixed
+note: 1 hard-rule miss: model-family-display deviation at line 1589 lacked required ponytail comment. added ponytail comment (ceiling + upgrade path). tests still 192/192. re-reviewing.
+
+## 2026-06-28 00:20 — reviewer (re-review) · feature: phase-3-insights-and-sessions
+status: VERDICT: SHIP
+note: ponytail fix confirmed (lines 1589-91, ceiling+upgrade path), additive only, spiral ponytail intact. block cleared.
