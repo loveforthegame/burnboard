@@ -769,6 +769,167 @@ test('heatmap: two turns same cell sum tokens', () => {
 });
 
 // ================================================================
+// Phase 2 — additional coverage (extended)
+// ================================================================
+console.log('\nPhase 2 — extended coverage');
+
+// fmtTokens — the formatter used in tooltips, legends, axis ticks
+function fmtTokens(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'K';
+  return String(n);
+}
+
+test('fmtTokens: < 1000 → raw string', () => eq(fmtTokens(0),   '0'));
+test('fmtTokens: 999 → "999"',         () => eq(fmtTokens(999), '999'));
+test('fmtTokens: 1000 → "1K"',         () => eq(fmtTokens(1000), '1K'));
+test('fmtTokens: 1500 → "2K" (rounds)', () => eq(fmtTokens(1500), '2K'));
+test('fmtTokens: 1000000 → "1.0M"',    () => eq(fmtTokens(1000000), '1.0M'));
+test('fmtTokens: 1500000 → "1.5M"',    () => eq(fmtTokens(1500000), '1.5M'));
+test('fmtTokens: 284000 → "284K"',     () => eq(fmtTokens(284000), '284K'));  // dump 7.9 example
+
+// 30d and 90d range cutoffs (only 7d and all were tested before)
+test('30d range: excludes turn 31 days old', () => {
+  const old    = daysAgo(31, { session_id: 'old', input_tokens: 1000, output_tokens: 0 });
+  const recent = daysAgo(5,  { session_id: 'new', input_tokens: 200,  output_tokens: 0 });
+  const fd = computeFilteredData([old, recent], { range: '30d', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+  eq(fd.daily_usage[0].total_tokens, 200);
+});
+
+test('30d range: includes turn 29 days old', () => {
+  const t = daysAgo(29, { session_id: 's1', input_tokens: 400, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: '30d', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+});
+
+test('90d range: excludes turn 91 days old', () => {
+  const old    = daysAgo(91, { session_id: 'old', input_tokens: 999, output_tokens: 0 });
+  const recent = daysAgo(10, { session_id: 'new', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([old, recent], { range: '90d', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+  eq(fd.daily_usage[0].total_tokens, 100);
+});
+
+test('90d range: includes turn 89 days old', () => {
+  const t = daysAgo(89, { session_id: 's1', input_tokens: 700, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: '90d', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+});
+
+// heatmap: rowIndex → dow mapping (the riskiest wiring per changes.md)
+// Formula: dow = (rowIndex + 1) % 7
+// rowIndex=0 (Mon row) → dow=1; rowIndex=6 (Sun row) → dow=0
+test('heatmap rowIndex mapping: Mon (dow=1) lands in row 0', () => {
+  // 2026-06-15 is Monday → getUTCDay()=1
+  const t = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 's1', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.heatmap[0].day_of_week, 1);  // dow=1 → (rowIndex+1)%7=1 → rowIndex=0 (Mon)
+});
+
+test('heatmap rowIndex mapping: Sun (dow=0) → (0+6)%7=6 so rowIndex=6 (Sun row)', () => {
+  // 2026-06-14 is Sunday → getUTCDay()=0
+  const t = turn({ timestamp: '2026-06-14T10:00:00Z', session_id: 's1', input_tokens: 200, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.heatmap[0].day_of_week, 0);  // dow=0 → rowIndex=(0+6)%7=6 (Sun row — bottom)
+});
+
+test('heatmap rowIndex mapping: Sat (dow=6) → rowIndex=5 (Sat row)', () => {
+  // 2026-06-13 is Saturday → getUTCDay()=6
+  const t = turn({ timestamp: '2026-06-13T10:00:00Z', session_id: 's1', input_tokens: 300, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.heatmap[0].day_of_week, 6);  // dow=6 → (rowIndex+1)%7=6 → rowIndex=5 (Sat row)
+});
+
+test('heatmap: Mon turn and Sun turn land in different cells', () => {
+  const tMon = turn({ timestamp: '2026-06-15T14:00:00Z', session_id: 'a', input_tokens: 100, output_tokens: 0 });
+  const tSun = turn({ timestamp: '2026-06-14T14:00:00Z', session_id: 'b', input_tokens: 200, output_tokens: 0 });
+  const fd = computeFilteredData([tMon, tSun], { range: 'all', model: 'all' });
+  eq(fd.heatmap.length, 2);  // different (dow, hour) cells
+  const dows = fd.heatmap.map(c => c.day_of_week).sort();
+  assert.deepStrictEqual(dows, [0, 1]);  // Sun=0, Mon=1
+});
+
+// heatmap under-3-days gate: days_with_data is what the gate uses
+test('days_with_data < 3 when only 2 distinct days', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 'a', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-16T10:00:00Z', session_id: 'b', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'all' });
+  assert.ok(fd.days_with_data < 3, `expected < 3, got ${fd.days_with_data}`);
+});
+
+test('days_with_data = 3 when exactly 3 distinct days (gate should pass)', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 'a', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-16T10:00:00Z', session_id: 'b', input_tokens: 100, output_tokens: 0 });
+  const t3 = turn({ timestamp: '2026-06-17T10:00:00Z', session_id: 'c', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2, t3], { range: 'all', model: 'all' });
+  eq(fd.days_with_data, 3);  // exactly 3 → grid should render (gate fires on < 3)
+});
+
+test('days_with_data drops below 3 when filter reduces range', () => {
+  // 5 days of data total, but 7d filter leaves only 2 (3 are older)
+  const old1 = daysAgo(10, { session_id: 'o1', input_tokens: 100, output_tokens: 0 });
+  const old2 = daysAgo(11, { session_id: 'o2', input_tokens: 100, output_tokens: 0 });
+  const old3 = daysAgo(12, { session_id: 'o3', input_tokens: 100, output_tokens: 0 });
+  const r1   = daysAgo(2,  { session_id: 'r1', input_tokens: 100, output_tokens: 0 });
+  const r2   = daysAgo(3,  { session_id: 'r2', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([old1, old2, old3, r1, r2], { range: '7d', model: 'all' });
+  assert.ok(fd.days_with_data < 3, `filter should reduce to < 3 days, got ${fd.days_with_data}`);
+});
+
+// model_breakdown: families with 0 tokens are excluded
+test('model_breakdown: excludes families with 0 tokens', () => {
+  // Only opus turns — sonnet/haiku/unknown should not appear
+  const t = turn({ model: 'claude-opus-4-5', session_id: 's1', input_tokens: 500, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.model_breakdown.length, 1);
+  eq(fd.model_breakdown[0].model_family, 'opus');
+});
+
+test('model_breakdown: empty when no turns pass filter', () => {
+  const fd = computeFilteredData([], { range: 'all', model: 'all' });
+  eq(fd.model_breakdown.length, 0);
+});
+
+test('model_breakdown pct = 100 for single-family range', () => {
+  const t1 = turn({ model: 'claude-sonnet-3-7', session_id: 's1', input_tokens: 300, output_tokens: 200 });
+  const t2 = turn({ model: 'claude-sonnet-3-7', session_id: 's2', input_tokens: 100, output_tokens: 0, timestamp: '2026-06-15T16:00:00Z' });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'all' });
+  eq(fd.model_breakdown.length, 1);
+  eq(fd.model_breakdown[0].pct, 100);
+});
+
+// top_projects: exactly 8 boundary (8 projects → all 8 returned, not sliced)
+test('top_projects: exactly 8 projects → all 8 returned', () => {
+  const turns8 = [];
+  for (let i = 1; i <= 8; i++) {
+    turns8.push(turn({ cwd: `/home/user/proj-${i}`, session_id: `s${i}`, input_tokens: i * 100, output_tokens: 0 }));
+  }
+  const fd = computeFilteredData(turns8, { range: 'all', model: 'all' });
+  eq(fd.top_projects.length, 8);
+});
+
+// haiku model filter
+test('model=haiku: keeps only haiku turns', () => {
+  const t1 = turn({ model: 'claude-haiku-3-5', session_id: 's1', input_tokens: 400, output_tokens: 0 });
+  const t2 = turn({ model: 'claude-opus-4-5',  session_id: 's2', input_tokens: 900, output_tokens: 0, timestamp: '2026-06-15T16:00:00Z' });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'haiku' });
+  eq(fd.daily_usage[0].total_tokens, 400);
+  eq(fd.model_breakdown[0].model_family, 'haiku');
+});
+
+// CANNOT-VERIFY-HEADLESS: browser/DOM-dependent checks confirmed by static inspection
+// 1. Filter handler wiring (AC#1): the handler at line 1436 of burnboard.html calls
+//    renderFilteredSections() only — `renderDashboard` does not appear in that handler body.
+//    Confirmed by grep: line 1446 calls `await renderFilteredSections()`, no renderDashboard call.
+// 2. Chart destroy-before-recreate: each render function (renderDailyBurn L969,
+//    renderModelBreakdown L1140, renderTopProjects L1182) calls `.destroy()` then null on
+//    the module-level handle before `new Chart(...)`.  Pattern verified by source inspection.
+// 3. Heatmap rowIndex→dow lookup: line 1069 uses `const dow = (rowIndex + 1) % 7`
+//    which correctly maps Mon(rowIndex=0)→dow=1 ... Sun(rowIndex=6)→dow=0.
+//    The lookup at line 1075 uses `lookup[\`${dow}-${h}\`]` matching heatmap key `${dow}-${hr}`.
+
+// ================================================================
 // Summary
 // ================================================================
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

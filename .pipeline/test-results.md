@@ -1,57 +1,55 @@
-# test-results — Phase 1
+# Test Results — Phase 2 filtered-charts
 
-## Test file
-`burnboard.test.js` — standalone Node script, no framework, no dependencies beyond `assert`.
+## Run
 
-## What was exercised (82 tests, 0 failures)
+`node burnboard.test.js` — plain Node, no framework, no deps.
 
-### isPeakHour (9 tests)
-All 6 inline self-check cases (SC1–SC6) verified under Node. Additional: low-bound (13 UTC = peak), one-past-boundary (19 UTC = off-peak), Friday 18 UTC = peak.
+## Result: 123 tests, 123 passed, 0 failed
 
-### djb2hex (4 tests)
-Determinism (same input → same output), collision resistance (different inputs → different outputs), hex output format, empty-string stability.
+(Previously 100 Phase 1 + Phase 2 tests; 23 new assertions added.)
 
-### modelFamily (6 tests)
-opus/sonnet/haiku detection, null → other, unknown string → other, case-insensitivity.
+---
 
-### buildWindows — gap logic (15 tests)
-- Empty input → 0 windows.
-- Single turn → 1 window.
-- Two turns < 5h apart → 1 window.
-- Two turns exactly 5h apart → 1 window (boundary: condition is `> WIN_MS`, not `>=`).
-- Two turns > 5h apart → 2 windows (5h 1s gap).
-- Same session, multiple windows when gap > 5h (spec edge case).
-- Cross-session gap > 5h → 2 windows.
-- Unsorted input sorted before windowing; `window_start` = earliest timestamp.
-- `window_id` = `djb2hex(window_start)` (deterministic).
-- `window_end` = last turn timestamp in the window.
-- `is_peak_hour` set from first turn's timestamp.
-- `is_complete = 1` for windows older than 5h (tested with 2020 timestamp).
-- Opus token accumulation across turns.
-- Mixed model families bucket to independent counters (opus/sonnet/haiku).
+## What was exercised
 
-### buildWindows — dedup simulation (3 tests)
-IDB cursor (`dbDeleteTurnsBySession`) is browser-only; tested the computation side instead:
-- Without dedup: same session turns inserted twice doubles `total_input_tokens` and `opus_tokens` (confirms the delete-before-insert guard is load-bearing for weekly cap).
-- After dedup (clean single-turn set): weekly-cap `opusPct` computes correctly (~4% for 1h of opus on max5x).
-- Double-inserted session yields ~8% opusPct, confirming double-count without the guard.
+### Carried forward (100 tests, all pass)
+Phase 1 coverage of `isPeakHour`, `djb2hex`, `modelFamily`, `buildWindows` (gap logic + dedup simulation), `buildSessions`, `getMondayUTC`, `clamp`, the state machine, `today_vs_avg`, and `projOpusPct` / forecast state.
 
-### buildSessions (7 tests)
-Two-turn aggregation (input/output/cache totals, first/last timestamp, turn_count). Two sessions → two records. Dominant model by token volume (not turn count), including sonnet-wins case. `project_name` from last path segment for POSIX and Windows paths. Empty cwd → empty project_name.
+Phase 2 original 18 assertions: 7d/all range cutoff, model filter (opus/sonnet), daily_usage bucketing + session dedup, daily_usage ascending sort, top_projects desc sort + 8-slice, top_projects session count, empty-cwd → "unknown", days_with_data count, model_breakdown unknown mapping + order + pct sum, heatmap day/hour bucketing + cell token summation.
 
-### getMondayUTC (7 tests)
-Monday (no-op), Tuesday, Wednesday, Friday (all → same Monday). Sunday (-6 days), Saturday (-5 days). Result always lands at midnight UTC.
+### New assertions (23, all pass)
 
-### clamp (6 tests)
-Below min, above max, in range, at min/max boundaries. Verified `fracElapsed` is clamped to 0.01 at Monday 00:01 UTC (natural value ~0.0001).
+**fmtTokens (7 assertions)**
+Raw values under 1000, the 999/1000 boundary, 1500 → "2K" (rounds), 1.0M boundary, 1.5M, and the dump-7.9 example value of 284K.
 
-### State machine ordering + boundaries (16 tests)
-SC7–SC13 (inline self-check cases re-verified). `no_data` checked before `weekend` (ordering guard). Exact strict-`>` boundaries: opus=80 → caution_peak, opus=81 → danger; sonnet=85 → caution_peak, sonnet=86 → danger; opus=70 off-peak → good, opus=71 → caution_budget; sonnet=75 → good, sonnet=76 → caution_budget.
+**30d and 90d range cutoffs (4 assertions)**
+31-day-old turn excluded from 30d range; 29-day-old included. 91-day-old excluded from 90d range; 89-day-old included. (Only 7d and all were tested previously.)
 
-### today_vs_avg denominator = 30 (3 tests)
-Confirmed `avg = last30Tok / 30` (not distinct-days). Zero-avg guard prevents division by zero. Ratio > 1 when today exceeds 30-day average.
+**Heatmap rowIndex→dow mapping (4 assertions)**
+Monday turn (getUTCDay=1) stored as dow=1, which maps back to rowIndex=0 (Mon row) via `(rowIndex+1)%7`. Sunday turn (getUTCDay=0) stored as dow=0, maps to rowIndex=6 (Sun row, bottom). Saturday (dow=6) maps to rowIndex=5. Confirmed Mon and Sun turns land in distinct cells with the correct dow values, so the lookup key never collides.
 
-### projOpusPct + forecast state (6 tests)
-Formula `opusPct / fracElapsed` verified. on_track (40%/0.5 = 80%), tight (60%/0.5 = 120%), exhausted (opusPct=100). Clamp at Monday 00:01 UTC prevents Infinity (5/0.01 = 500, finite). on_track remaining = `round(100 - proj)`, clamped ≥ 0.
+**Heatmap under-3-days gate — data path (3 assertions)**
+2 days → days_with_data < 3 (gate fires). Exactly 3 days → days_with_data = 3 (gate does not fire; grid renders). Filter-reduced case: 5 days of raw data cut to 2 by 7d range → days_with_data < 3 (filter-induced gate fires correctly).
+
+**model_breakdown exclusion and edge cases (3 assertions)**
+Single-family data → only that family appears (0-token families are excluded). Empty turns set → model_breakdown is empty (no division by zero). Single-family 100% case → pct is exactly 100.
+
+**top_projects boundary (1 assertion)**
+Exactly 8 projects → all 8 returned (slice(0,8) is non-destructive at boundary).
+
+**model=haiku filter (1 assertion)**
+Haiku filter keeps only haiku turns; opus turns are excluded from both daily_usage and model_breakdown.
+
+---
+
+## Static source inspection (browser/DOM — CANNOT-VERIFY-HEADLESS)
+
+These three risks from changes.md were confirmed by source reading, not execution:
+
+1. **Filter handler calls only renderFilteredSections (AC#1).** The delegated click handler at `burnboard.html` line 1436 calls `await renderFilteredSections()` at line 1446. The string `renderDashboard` does not appear in that handler body. Phase 1 sections (Start Check / Mini Stats / Forecast) are not touched on filter change.
+
+2. **Chart destroy-before-recreate.** `renderDailyBurn` (line 969), `renderModelBreakdown` (line 1140), and `renderTopProjects` (line 1182) each call `.destroy()` and null the module-level handle before `new Chart(...)`. Pattern is consistent across all three functions.
+
+3. **Heatmap rowIndex→dow lookup alignment.** Line 1069: `const dow = (rowIndex + 1) % 7`. Line 1075: lookup key `${dow}-${h}` matches the heatmap data key `${dow}-${hr}`. Mon=rowIndex 0→dow 1; Sun=rowIndex 6→dow 0. Correct per spec.
 
 STATUS: PASS
