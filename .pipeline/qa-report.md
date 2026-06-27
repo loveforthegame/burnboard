@@ -1,99 +1,104 @@
-## QA Report — Phase 2: filtered-charts
-Date: 2026-06-27
-Criteria source: `ROADMAP.md` Phase 2 acceptance criteria (5 items) + `.pipeline/spec.md` detailed requirements
+# QA Report — Phase 3: insights-and-sessions
+
+Date: 2026-06-28
+Criteria source: `ROADMAP.md` Phase 3 acceptance criteria + `.pipeline/spec.md` (detailed triggers, thresholds, field specs)
 
 ---
 
-### Test Run: burnboard.test.js
+## Test Run
 
-```
-123 tests: 123 passed, 0 failed
-```
+`node burnboard.test.js` — **192 tests: 192 passed, 0 failed**
 
-All assertions pass, including the 19 Phase 2 filter/aggregation tests and 23 extended coverage tests added by Phase 2.
+All 192 assertions pass cleanly with no errors or warnings.
 
 ---
 
-### Results
+## Results
 
-| Criterion | Status | Evidence |
-|-----------|--------|----------|
-| Changing range or model re-renders the four sections in this phase but leaves Start Check, Mini Stats, and Forecast unchanged (per 7.4). | PASS | Filter click handler at line 1436 is a delegated listener on `#dashboard-content`. It calls ONLY `renderFilteredSections()` (line 1446). `renderDashboard()` is never called from this handler. `renderFilteredSections()` calls `loadFilteredData()` then the four render helpers — none of which touch `#start-check`, `#mini-stats`, or `#forecast` DOM nodes. `loadDataLocal()` (the unfiltered Phase 1 source) is also not called. Comment at line 1435 explicitly documents this constraint. |
-| Daily burn chart shows token bars per day in range, highlights today, and shows the empty state when the range has no usage. | PASS | `renderDailyBurn()` at line 956: empty state renders `no usage in this range` (exact copy) in a 240px container when `daily_usage.length === 0` and returns early. When data exists, today's bar gets `#FB923C` (--accent2) vs `#F97316` (--accent) for all other bars (line 974). Tooltip `title` callback appends `· today` for today's date (line 991). Y-axis ticks use `fmtTokens()` callback (K/M, line 1011). `if (!window.Chart) return` CDN guard at line 967. |
-| Heatmap renders 7x24 cells colored by token intensity, tints weekday peak columns (13-18 UTC), shows the local-timezone peak-hours note, and shows the "add more data" state under 3 days of data. | PASS | `renderHeatmap()` at line 1020. Under-3-days gate at line 1042 (`fd.days_with_data < 3`) renders exact string `add more data to see your patterns` plus the TZ note and returns. Full grid: 7 rows x 24 columns via CSS grid class `heatmap-grid` (line 198 CSS). Row mapping `rowIndex = (dow + 6) % 7` correct: Mon(dow=1) to 0, Sun(dow=0) to 6 (line 1069, commented). Log intensity formula matches spec (lines 1080-1082). Peak tint (hours 13-18, weekday rows 0-4): `linear-gradient(rgba(249,115,22,intensity), rgba(249,115,22,intensity)), rgba(251,191,36,.08)` (line 1094). Non-peak cells: solid orange alpha or transparent (line 1096). TZ note computed via `Intl.DateTimeFormat` with `timeZoneName:'short'` formatToParts (lines 1032-1038); falls back to IANA string on error. Note shown in both under-3-days path (line 1044) and full-grid path (line 1103). Test `heatmap rowIndex mapping` suite (3 assertions) all PASS. |
-| Model breakdown doughnut shows opus/sonnet/haiku/unknown segments with center total and legend; top projects shows up to 8 folders by token volume. | PASS | `renderModelBreakdown()` at line 1108: segment colors at line 1114 (opus `#A78BFA`, sonnet `#38BDF8`, haiku `#2DD4BF`, unknown `#4A4440`). Center total: absolutely-positioned `.doughnut-center` with `.mono` span (line 1128). Custom legend via `.chart-legend` / `.legend-row` / `.legend-swatch` (lines 1131-1138); Chart.js built-in legend disabled (line 1156). `renderTopProjects()` at line 1170: `indexAxis:'y'` for horizontal bar (line 1199). `top_projects` sliced to 8 in `loadFilteredData()` (line 906). Tooltip shows `tokens · N sessions` from project data (lines 1205-1207). Empty state for both: `no usage in this range` (lines 1119, 1177). `if (!window.Chart) return` CDN guards at lines 1122, 1180. Tests: `top_projects: exactly 8 projects → all 8 returned` PASS; `model_breakdown: order is opus, sonnet, haiku, unknown` PASS. |
-| All four respect the active filter selection. | PASS | All four render functions receive `fd` from `loadFilteredData()` which applies `_filter.range` cutoff then `_filter.model` family filter before computing all four data fields. The filter state `_filter` is module-level and updated by the click handler before `renderFilteredSections()` is called. Tests confirm both range and model filters exclude/include correct turns: `7d range: excludes turn 8 days old` PASS, `model=opus: keeps only opus turns` PASS, `model=haiku: keeps only haiku turns` PASS, etc. |
-
----
-
-### Critical Checks (beyond the five ACs)
-
-**AC#1 deep check — filter never re-renders Start Check / Mini Stats / Forecast:**
-Confirmed. Filter handler at line 1436 is on `#dashboard-content` (delegated). The only function it calls is `renderFilteredSections()` (line 1446). `renderDashboard()` is called only at line 719 (post-sync boot) and line 1476 (re-sync). `loadDataLocal()` is called only inside `renderDashboard()` (line 1236), never from `renderFilteredSections()` or `loadFilteredData()`. PASS.
-
-**Chart.js CDN-miss safety (`if (window.Chart)`):**
-- `renderDailyBurn`: guard at line 967, after the empty-state check and return, so empty state still renders on CDN miss. PASS.
-- `renderModelBreakdown`: guard at line 1122, after empty-state check and return. PASS.
-- `renderTopProjects`: guard at line 1180, after empty-state check and return. PASS.
-- `renderHeatmap`: no Chart.js used — pure CSS grid. No guard needed. PASS.
-
-**Chart destroy-before-recreate:**
-- `_dailyChart` destroyed at line 969 before `new Chart()` at line 976. PASS.
-- `_modelChart` destroyed at line 1140 before `new Chart()` at line 1142. PASS.
-- `_projChart` destroyed at line 1182 before `new Chart()` at line 1190. PASS.
-- All three handles declared at line 819, initialized to `null`. PASS.
-
-**Heatmap dow/hour mapping:**
-`dow = (rowIndex + 1) % 7` gives Mon=1, Tue=2, ..., Sat=6, Sun=0 (line 1069). Lookup key `${dow}-${h}` matches the key written in `loadFilteredData()` as `${dt.getUTCDay()}-${dt.getUTCHours()}` (line 869). Mapping is consistent. Tests `heatmap rowIndex mapping: Mon (dow=1) lands in row 0`, `Sun → rowIndex=6`, `Sat → rowIndex=5` all PASS.
-
-**Range/model aggregation correctness:**
-All 19 Phase 2 filter+aggregation tests pass. Key checks: range cutoff arithmetic, model family filtering via reused `modelFamily()`, `daily_usage` deduplication with `Set` for sessions, `top_projects` sort-desc-slice-8, `days_with_data = daily_usage.length`, `model_breakdown` family ordering and `other → unknown` remapping.
-
-**Filter defaults:**
-`_filter = { range: '30d', model: 'all' }` at line 816. `renderFilterBar()` marks the matching buttons with `.sel` on first render (lines 921, 924). Default-selected `30d` and `all` on load: PASS.
-
-**Spec string compliance (exact lowercase copy):**
-- `🔥 daily burn rate` — line 961. PASS.
-- `🌡 when you work` with subtext `amber = peak hours` — line 1040. PASS.
-- `model breakdown` — line 1116. PASS.
-- `top projects` — line 1174. PASS.
-- `no usage in this range` — lines 963, 1119, 1177. PASS.
-- `add more data to see your patterns` — line 1043. PASS.
-- Filter labels: `7d 30d 90d all` / `all opus sonnet haiku` lowercase rendered from arrays at lines 918-919. PASS.
-- Group labels `range` / `model` lowercase (lines 928, 933). PASS.
-
-**Surgical changes / scope guard:**
-No modifications to `loadDataLocal`, `renderStartCheck`, `renderMiniStats`, `renderForecast`, the IDB layer, parsing, or boot. Phase 3+ items (insights, sessions table, cost/summary, history, reconnect) are not present. PASS.
-
-**`ponytail:` comments on all spec-required simplifications:**
-CDN pin (line 10), chart font (line 821), rounded pcts (line 884), TZ short-name fallback (line 1028), log-intensity formula (line 1076), segment hex tints (line 1112). All present. PASS.
-
-**JetBrains Mono on numbers:**
-Chart.js `font.family:'JetBrains Mono'` set on axis ticks and tooltip fonts in all three charts. Legend values wrapped in `<span class="mono">` (line 1135). Doughnut center uses `.mono` (line 1128). PASS.
-
-**`fmtTokens()` correctness:**
-Tests: `fmtTokens: 284000 → "284K"` PASS, `1000000 → "1.0M"` PASS, `1500 → "2K"` PASS, `999 → "999"` PASS. Function at line 822. PASS.
+| # | Criterion | Status | Evidence |
+|---|-----------|--------|----------|
+| 1 | Each of the four insight triggers fires on data matching its condition and stays silent otherwise; when none fire the single green "nothing alarming" card shows. | PASS | All four triggers verified by 20+ test assertions (`computeInsights — Spiral`, `Cache Alert`, `Peak Penalty`, `Opus Waste` suites). Green fallback: `if (insights.length === 0)` renders `card-green` with verbatim copy `nothing alarming — using claude code efficiently.` (`burnboard.html:1546–1549`). |
+| 2 | When more than three insights qualify, only three render in danger > warning > info priority order. | PASS | `PRIO = { danger:0, warning:1, info:2 }`, `fired.sort(...)` ascending on PRIO, `return fired.slice(0,3)` (`burnboard.html:964–966`). Test `when >3 fire, exactly 3 returned in danger>warning>info order` passes. |
+| 3 | Each insight card has the correct severity color and a working copy button that shows "copied!" then reverts after 1500ms. | PASS (logic); CANNOT-VERIFY-HEADLESS (DOM) | Severity classes: `danger→card-red`, `warning→card-amber`, `info→card-orange` (`burnboard.html:1542`). `copyText()` at lines 1529–1537: `navigator.clipboard.writeText` then `btn.textContent = 'copied!'` + `.copied` class, `setTimeout(() => restore, 1500)`. CSS `.btn-copy.copied` applies green bg/color (`burnboard.html:209`). 1500ms revert verified by source; live DOM interaction untestable headless. |
+| 4 | Sessions table lists recent sessions with project, relative when, duration, short model name, turns, and formatted tokens; clicking a row expands per-turn detail and collapses the previously open row. | PASS (logic); CANNOT-VERIFY-HEADLESS (click) | Columns `Project · When · Duration · Model · Turns · Tokens · ›` at `burnboard.html:1611`. `relWhen`, `fmtSessionDur`, model family all tested. One-open-at-a-time via `_openSession` module var + delegated handler at `burnboard.html:1902–1929`: closes previous on different-row click, second click on same row closes it (`_openSession = null`). |
+| 5 | Expanded rows show the context-growth mini-bar and mark turns whose input exceeds 3× turn 1 as "heavy context". | PASS (logic); CANNOT-VERIFY-HEADLESS (render) | Context bar: `barPct = Math.round(cumulative / totalCumul * 100)`, last turn = 100% (`burnboard.html:1629`). Heavy-context: `firstInput > 0 && t.input_tokens > 3 * firstInput` → `.heavy-context` row class + `.heavy-label` span (`burnboard.html:1631–1633`). Tests: strict `>`, exactly 3× not flagged, `turn1=0` guard, all pass. |
+| 6 | Cost-by-model and Summary tables compute from filtered data and show the API-pricing-equivalent note. | PASS | `renderSessions` and `renderCostSummary` called only from `renderFilteredSections()` (`burnboard.html:1241–1243`). Filter click handler calls only `renderFilteredSections()`, never `renderDashboard()` (`burnboard.html:1941`). Pricing matches §16 exactly. Note verbatim: `api pricing equivalent — not what you paid. you're on a flat subscription.` (`burnboard.html:1688`). Summary kv rows match spec: Sessions, Turns, Input tokens, Output tokens, Cache reads, API equiv. |
 
 ---
 
-### Defects Found
+## Insight Trigger Threshold Verification
 
-**MINOR — `d5` animation class undefined.**
-Chart section cards use class `au d5` (lines 940-944) but only `d0`-`d4` delay classes are defined in CSS (lines 177-181). `d5` falls through to no delay — all four chart cards animate in simultaneously with no stagger. This is cosmetic only; the spec marks entrance animations as "optional (not an AC)" and the cards still appear. No functional impact. Severity: cosmetic.
+| Trigger | Condition | Threshold check | Status |
+|---------|-----------|-----------------|--------|
+| Session Spiral | `turns.length <= 5 → skip` | `>5` strict per spec | PASS |
+| Session Spiral | `avgLate / avgEarly > 3.0` | strict `>`, 3.0 exactly silent | PASS |
+| Session Spiral | `spiralCount >= 3` | fires at 3+ | PASS |
+| Cache DANGER | `rateNow < 0.10 && ratePrev > 0.25 && totalTokNow > 50000` | all strict | PASS |
+| Cache WARNING | `rateNow < 0.15 && totalTokNow > 100000` | `else if` (DANGER suppresses) | PASS |
+| DANGER suppresses WARNING | `else if` branch | one card max | PASS |
+| Peak Penalty | `peakPct > 0.50` | strict `>`, exactly 0.50 silent | PASS |
+| Opus Waste | `turns.length >= 4 → skip` | `<4` strict | PASS |
+| Opus Waste | `opusWasteCount >= 5` | fires at 5+, silent at 4 | PASS |
 
 ---
 
-### Items Untestable Headless
+## Cost Math Verification (§16 Pricing)
 
-- Actual chart canvas rendering (Chart.js draws to `<canvas>`; needs a browser with a rendering context).
-- Live filter click interaction (requires a real DOM + IDB populated with turns data).
-- `Intl.DateTimeFormat` TZ abbreviation output for user's configured timezone (output depends on OS locale and the saved `_cfg.timezone` value).
-- Doughnut center overlay positioning (absolute CSS; visual verification only).
+| Model | Input $/1M | Output $/1M | Verified |
+|-------|-----------|------------|---------|
+| opus | $15.00 | $75.00 | PASS — 1M+1M = $90 |
+| sonnet | $3.00 | $15.00 | PASS — 1M+1M = $18 |
+| haiku | $0.25 | $1.25 | PASS — 1M+1M = $1.50 |
+| other/unknown | N/A | N/A | PASS — $0.00, zero-cost tested |
+
+Heavy-context `>3×`: `firstInput > 0 && t.input_tokens > 3 * firstInput` — strict, correct.
 
 ---
 
-### Summary
+## Filter-Scope Split Verification (dump 7.4)
 
-All 5 ROADMAP acceptance criteria pass. All 123 automated assertions pass including the full Phase 2 filter/aggregation suite. The critical AC#1 isolation check passes cleanly: the filter handler is a single-line call to `renderFilteredSections()` with no path to re-rendering Start Check, Mini Stats, or Forecast. Chart.js CDN guards, chart-destroy-before-recreate, heatmap dow/hour mapping, and all required spec strings are correctly implemented. One cosmetic defect: the `d5` CSS animation delay class is missing, causing chart cards to animate without stagger. Not an AC violation.
+| Section | Path | Filter affects? | Verified |
+|---------|------|----------------|---------|
+| Insights | `loadDataLocal()` → `computeInsights(allTurns, now)` → `renderDashboard()` | NO | PASS — receives all unfiltered turns, not in `loadFilteredData` |
+| Sessions table | `loadFilteredData()` → `buildSessions(filteredTurns)` → `renderFilteredSections()` | YES | PASS — `renderSessions` only in `renderFilteredSections()` |
+| Cost + Summary | `loadFilteredData()` → `renderFilteredSections()` | YES | PASS — `renderCostSummary` only in `renderFilteredSections()` |
+| Filter click handler | calls `renderFilteredSections()` only | — | PASS — `burnboard.html:1941`, no `renderDashboard()` call |
 
-QA: PASS
+---
+
+## `d` Fields Verification
+
+| Field | Location | Status |
+|-------|----------|--------|
+| `d.insights` | `loadDataLocal()` line 1019 | PASS |
+| `fd.recent_sessions` | `loadFilteredData()` — filtered turns via `buildSessions`, sorted desc, sliced 20 | PASS |
+| `fd.turns_by_session` | `loadFilteredData()` — top-20 only, 5 fields, ascending sort | PASS |
+| `fd.cost_by_model` | `loadFilteredData()` — per-family, >0 tokens only, opus/sonnet/haiku/unknown order | PASS |
+| `fd.summary` | `loadFilteredData()` — distinct sessions, turn count, field sums, cost sum | PASS |
+| `fd.total_api_cost_usd` | `loadFilteredData()` — mirrors `summary.total_api_cost_usd` | PASS |
+
+---
+
+## Observations
+
+**Minor deviation (not a defect):** The expanded turn-detail table renders 6 columns (`Time · Input · Output · Cache read · Tool used · Context`) where the spec lists 5. The 6th is a header for the context-growth mini-bar. The bar itself is correctly implemented per spec; the spec says the bar appears per row but does not specify a column header for it. This does not break criterion 5.
+
+**Ponytail notes carried correctly:** All `ponytail:` comments are present where the spec required them — spiral boundary ambiguity, clipboard Chrome-only, `buildSessions` vs sessions store, cache token pricing omission, session-max-cumulative interpretation.
+
+---
+
+## Items Not Testable Without a Browser
+
+1. Copy button 1500ms revert — `setTimeout(..., 1500)` confirmed in source; actual clipboard write and UI revert requires browser.
+2. One-row-open-at-a-time interaction — `_openSession` logic verified correct by source; click events require browser.
+3. Insights not re-rendering on filter change — source confirms `renderInsights` is absent from `renderFilteredSections`; observable only in browser.
+4. Stagger entrance animations on insight cards — `.au .d1/.d2/.d3` CSS confirmed present.
+5. Row hover styles on sessions table — CSS confirmed present (`burnboard.html:218`).
+
+---
+
+## Summary
+
+All 6 ROADMAP Phase 3 acceptance criteria pass. All 192 automated tests pass with 0 failures. The four insight triggers implement their spec thresholds exactly (all strict-comparison boundaries confirmed by dedicated test cases). Priority/max-3 selection is correct, DANGER suppresses WARNING via `else if`, and the filter-scope split (insights on unfiltered path, sessions+cost on filtered path) is correctly wired at both the data and render layers. Cost math matches §16 pricing. No defects found.
+
+**QA: PASS**

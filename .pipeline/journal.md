@@ -80,3 +80,7 @@ note: 1 hard-rule miss: model-family-display deviation at line 1589 lacked requi
 ## 2026-06-28 00:20 — reviewer (re-review) · feature: phase-3-insights-and-sessions
 status: VERDICT: SHIP
 note: ponytail fix confirmed (lines 1589-91, ceiling+upgrade path), additive only, spiral ponytail intact. block cleared.
+
+## 2026-06-28 00:21 — product-qa · feature: phase-3-insights-and-sessions
+status: QA PASS
+note: 192/192, all 6 ACs pass. triggers fire/silent at exact thresholds, priority/max-3 + DANGER-suppresses-WARNING correct, filter-scope split correct. minor obs: expanded turn-detail has a "Context" header (for required mini-bar) not literally named in dump 7.9 — reviewer passed it, not a defect.
