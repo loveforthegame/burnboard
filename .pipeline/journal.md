@@ -118,3 +118,30 @@ note: diff purely additive (+630/-0 html), phase 1/2/3 untouched. billing_start 
 ## 2026-06-28 00:51 — product-qa · feature: phase-4-history-and-export
 status: QA PASS
 note: 238/238, all 5 ACs pass, no defects. billing_start key only, account dropdown hidden, recompute writes 'combined'. CSV columns exact.
+
+## 2026-06-28 00:52 — RUN START · feature: phase-5-6-combined (two-account + tips/polish)
+request: /ship phase 5 and 6 together
+branch: ship/20260628-005200-phase-5-6-accounts-polish
+base: phase 4 (edf82e9, on master)
+note: combined pipeline per user directive. one spec covering ROADMAP phase 5 (two-account) + phase 6 (tips tab, reconnect, what's-coming, toasts, favicon, reduced-motion, empty/error states).
+
+## 2026-06-28 01:?? — planner · feature: phase-5-6-combined
+status: spec written (232 lines, no open questions) — planner hit spend limit on its summary only; spec complete
+note: account_label already end-to-end since phase 1; phase only wires sync-chosen label + per-account cache. Part A: sync prompt modal, account selector, combined totals card, reconnect-from-dismiss=Primary. Part B: tips tab (resolves inert button ponytail), reconnect screen (resolves phase1 fallback ponytail), whats-coming, toast system, favicon by state, reduced-motion, §18 error table. anchors given as file:line.
+
+## 2026-06-28 01:30 — coder · feature: phase-5-6-combined
+status: implemented
+files: burnboard.html (phase 5+6 additions), burnboard.test.js (+29 = 267 total)
+note: recomputeMonthlyCache loops [acct1,acct2,'combined']. promptAccount dismiss->Primary. toast priority skipped>caught-up. mid-sync fail auto-loads IDB if turns exist. renderHistory now async. tipPersonalization only tips 1/2/5. riskiest = account-label wiring through sync + per-account cache + history account filter.
+
+## 2026-06-28 01:28 — tester · feature: phase-5-6-combined
+status: tests passed
+note: 288/288 (+21). Primary-in-combined-not-Alt invariant verified; label-loop resolution; tips 7-day boundary (strict <7); toast priority skipped>caught-up; promptAccount fallback chain. 4 browser-only items documented.
+
+## 2026-06-28 01:34 — reviewer · feature: phase-5-6-combined
+status: VERDICT: NEEDS WORK -> fixed
+note: 1 required: tips personalisation badges + subtext left numbers bare (mono hard rule). wrapped numbers in <span class="mono"> at html lines 2142/2162/2172/2800 + test copy. restored dropped "// ORIGINATED: billing empty state" comment. tests 288/288. re-reviewing.
+
+## 2026-06-28 01:42 — reviewer (re-review) · feature: phase-5-6-combined
+status: VERDICT: SHIP
+note: 4 mono wraps confirmed (matches phase 3 convention), test parity holds (substring asserts survive), billing comment restored. no regressions. block/needs-work cleared.

@@ -2605,7 +2605,7 @@ function tipPersonalization(turns, now) {
   let totalIn = 0, totalOut = 0;
   for (const t of recent) { totalIn += t.input_tokens; totalOut += t.output_tokens; }
   const ratio = totalIn > 0 ? totalOut / totalIn : 0;
-  const tip1 = ratio > 2.0 ? `your data: output ratio is ${ratio.toFixed(1)}×` : null;
+  const tip1 = ratio > 2.0 ? `your data: output ratio is <span class="mono">${ratio.toFixed(1)}×</span>` : null;
 
   const sessMap = {};
   for (const t of recent) {
@@ -2624,7 +2624,7 @@ function tipPersonalization(turns, now) {
     const avgL = late.reduce((s, v) => s + v, 0) / late.length;
     if (avgL / avgE > 3.0) spiralCount++;
   }
-  const tip2 = spiralCount >= 3 ? `your data: ${spiralCount} sessions spiraled this week` : null;
+  const tip2 = spiralCount >= 3 ? `your data: <span class="mono">${spiralCount}</span> sessions spiraled this week` : null;
 
   let opusWaste = 0;
   for (const ts of Object.values(sessMap)) {
@@ -2633,7 +2633,7 @@ function tipPersonalization(turns, now) {
     for (const t of ts) vol[modelFamily(t.model)] += t.input_tokens + t.output_tokens;
     if (Object.entries(vol).sort((a, b) => b[1] - a[1])[0][0] === 'opus') opusWaste++;
   }
-  const tip5 = opusWaste >= 5 ? `your data: ${opusWaste} short opus sessions` : null;
+  const tip5 = opusWaste >= 5 ? `your data: <span class="mono">${opusWaste}</span> short opus sessions` : null;
 
   return { 1:tip1, 2:tip2, 3:null, 4:null, 5:tip5, 6:null };
 }
