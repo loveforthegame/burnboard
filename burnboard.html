@@ -237,6 +237,31 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .cost-table td{padding:8px 10px;border-bottom:1px solid var(--bdr)}
 .cost-table tr:last-child td{border-bottom:none}
 .cost-note{font-size:11px;color:var(--mu2);margin-top:12px}
+
+/* Phase 4 — History (dump 8, 8.1-8.4) */
+.history-header-row{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.history-views{display:flex;gap:8px}
+.month-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:24px}
+.month-card{background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:16px 18px}
+.month-card.no-data{opacity:.4}
+.month-card-header{font-size:14px;font-weight:600;color:var(--mu);margin-bottom:10px}
+.month-card-tokens{font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:400;line-height:1;margin-bottom:4px}
+.month-card-label{font-size:12px;color:var(--mu);margin-bottom:8px}
+.month-card-meta{font-size:12px;color:var(--mu);line-height:1.6}
+.month-delta-up{color:var(--green);font-weight:600;font-size:12px}
+.month-delta-down{color:var(--red);font-weight:600;font-size:12px}
+.history-table{width:100%;border-collapse:collapse;font-size:13px}
+.history-table th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--mu);padding:0 10px 8px;border-bottom:1px solid var(--bdr)}
+.history-table td{padding:9px 10px;border-bottom:1px solid var(--bdr)}
+.history-table tr:last-child td{border-bottom:none}
+.history-table tr.faded{opacity:.4}
+.sparkline-wrap{position:relative;height:120px;margin-top:16px}
+.monthly-chart-wrap{position:relative;height:240px;margin-top:16px}
+.cycle-card{background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:20px 24px;margin-bottom:20px}
+.cycle-card-title{font-size:13px;color:var(--mu);margin-bottom:12px}
+.cycle-card-tokens{font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:400;line-height:1;margin-bottom:8px}
+.cycle-vs{font-size:13px;color:var(--mu);margin-bottom:12px}
+.cycle-bar-label{font-size:12px;color:var(--mu);margin-bottom:6px}
 </style>
 </head>
 <body>
@@ -761,6 +786,10 @@ async function runSync(dirHandle) {
 
   await dbPut('kv', new Date().toISOString(), 'bb_last_sync');
   await dbPut('kv', true, 'bb_visited');
+
+  // Phase 4 integration: recompute monthly cache post-sync.
+  // ponytail: failure here must not crash sync or dashboard (Phase 6 adds stale-cache UI notice).
+  try { await recomputeMonthlyCache(); } catch (e) { console.error('[BurnBoard] monthly cache:', e); }
 
   setProgress(100);
   if (skippedLines > 0) console.log(`[BurnBoard] skipped ${skippedLines} malformed lines`);
@@ -1694,6 +1723,603 @@ function renderCostSummary(fd) {
 }
 
 // ================================================================
+// PHASE 4 — HISTORY TAB (dump 8, 8.1-8.4, 15.4, 15.5)
+// ================================================================
+
+// Module state
+let _historyView = 'monthly';
+let _monthlyChart = null, _weeklyChart = null;
+let _historyBound = false; // guard against double-binding the delegated listener
+
+// ----------------------------------------------------------------
+// aggregateMonths(turns) — PURE core of recomputeMonthlyCache.
+// Testable without IDB. Returns one record per month_key.
+// ----------------------------------------------------------------
+function aggregateMonths(turns) {
+  const map = {};
+  for (const t of turns) {
+    const mk = t.month_key || t.timestamp.substring(0, 7);
+    if (!map[mk]) {
+      map[mk] = {
+        month_key: mk,
+        total_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
+        sessions: new Set(), active_days: new Set(),
+        opus: 0, sonnet: 0, haiku: 0,
+      };
+    }
+    const m = map[mk];
+    m.input_tokens       += t.input_tokens;
+    m.output_tokens      += t.output_tokens;
+    m.cache_read_tokens  += t.cache_read_tokens;
+    m.total_tokens       += t.input_tokens + t.output_tokens;
+    m.sessions.add(t.session_id);
+    m.active_days.add(t.timestamp.substring(0, 10));
+    const fam = modelFamily(t.model);
+    if (fam === 'opus')   m.opus   += t.input_tokens + t.output_tokens;
+    if (fam === 'sonnet') m.sonnet += t.input_tokens + t.output_tokens;
+    if (fam === 'haiku')  m.haiku  += t.input_tokens + t.output_tokens;
+  }
+  return Object.values(map).map(m => {
+    // top_model: opus > sonnet > haiku stable tie-break (sort by value desc, fixed order)
+    const ranked = [['opus', m.opus], ['sonnet', m.sonnet], ['haiku', m.haiku]]
+      .sort((a, b) => b[1] - a[1]);
+    return {
+      month_key:         m.month_key,
+      total_tokens:      m.total_tokens,
+      input_tokens:      m.input_tokens,
+      output_tokens:     m.output_tokens,
+      cache_read_tokens: m.cache_read_tokens,
+      sessions:          m.sessions.size,
+      active_days:       m.active_days.size,
+      top_model:         ranked[0][0],
+    };
+  });
+}
+
+// ----------------------------------------------------------------
+// recomputeMonthlyCache() — async IDB wrapper around aggregateMonths.
+// Writes under account_label:'combined' (Phase 4 single-account).
+// ponytail: single-account collapse — all months written under 'combined'.
+// Ceiling: no per-account split yet. Upgrade path (Phase 5): loop over real
+// account labels per dump §15.4's `for (const label of accountLabels)`.
+// ----------------------------------------------------------------
+async function recomputeMonthlyCache() {
+  const turns = await dbGetAll('turns');
+  if (turns.length === 0) return; // edge: no turns → write nothing
+  const records = aggregateMonths(turns).map(r => ({
+    ...r,
+    account_label: 'combined',
+    computed_at: new Date().toISOString(),
+  }));
+  await dbBatchPut('monthly_cache', records);
+}
+
+// ----------------------------------------------------------------
+// getWeeklyBuckets(turns, n) — PURE. Returns n Mon–Sun UTC buckets oldest-first.
+// ponytail: Monday math reuses getMondayUTC (burnboard.html line ~775) — same result
+// as dump §15.5 inline, single source of truth to avoid drift.
+// ----------------------------------------------------------------
+function getWeeklyBuckets(turns, n = 12, now = Date.now()) {
+  const thisMonday = getMondayUTC(now);
+  const buckets = [];
+  for (let i = 0; i < n; i++) {
+    const startMs = thisMonday - i * 7 * 86400000;
+    const endMs   = startMs + 7 * 86400000;
+    const startDate = new Date(startMs);
+    const endDate   = new Date(endMs - 86400000); // inclusive Sunday
+
+    // Build label: "Jun 23–29" or "Jun 30–Jul 6"
+    const fmtMD   = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const fmtD    = new Intl.DateTimeFormat(undefined, { day: 'numeric', timeZone: 'UTC' });
+    const fmtMDe  = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const startLabel = fmtMD.format(startDate);
+    // ponytail: cross-month label shows both months; same-month omits second.
+    const endLabel = startDate.getUTCMonth() !== endDate.getUTCMonth()
+      ? fmtMDe.format(endDate)
+      : fmtD.format(endDate);
+    const label = `${startLabel}–${endLabel}`;
+
+    const startIso = new Date(startMs).toISOString();
+    const endIso   = new Date(endMs).toISOString();
+    let total_tokens = 0, opus_tokens = 0, sonnet_tokens = 0;
+    const sessions = new Set();
+    for (const t of turns) {
+      const ts = t.timestamp;
+      if (ts < startIso || ts >= endIso) continue;
+      const tok = t.input_tokens + t.output_tokens;
+      total_tokens += tok;
+      const fam = modelFamily(t.model);
+      if (fam === 'opus')   opus_tokens   += tok;
+      if (fam === 'sonnet') sonnet_tokens += tok;
+      sessions.add(t.session_id);
+    }
+    buckets.push({ label, start_iso: startIso, total_tokens, opus_tokens, sonnet_tokens, sessions: sessions.size });
+  }
+  // dump §15.5: return oldest-first
+  return buckets.reverse();
+}
+
+// ----------------------------------------------------------------
+// getBillingCycles(turns, billingStartDay, now) — PURE.
+// Returns current cycle + prior 3 (4 total), newest-first.
+// ponytail: billingStartDay capped at 28 by the settings input, so Date.UTC(y,m,28)
+// never rolls into the next month — no clamping needed.
+// Ceiling: days 29–31 unsupported (matches settings max). Upgrade = clamp to month
+// length if the input ever allows >28.
+// ----------------------------------------------------------------
+function getBillingCycles(turns, billingStartDay, now) {
+  const bsd = Number(billingStartDay) || 1;
+  const nowDate = new Date(now);
+  const nowDay  = nowDate.getUTCDate();
+  const nowMonth = nowDate.getUTCMonth();
+  const nowYear  = nowDate.getUTCFullYear();
+
+  // Find current cycle start
+  let curYear = nowYear, curMonth = nowMonth;
+  if (nowDay < bsd) {
+    // cycle started in the prior month
+    curMonth--;
+    if (curMonth < 0) { curMonth = 11; curYear--; }
+  }
+
+  const cycles = [];
+  for (let i = 0; i < 4; i++) {
+    let sy = curYear, sm = curMonth - i;
+    while (sm < 0) { sm += 12; sy--; }
+    const startMs = Date.UTC(sy, sm, bsd);
+    const nextMs  = Date.UTC(sy, sm + 1, bsd); // JS normalizes month overflow
+
+    const startIso = new Date(startMs).toISOString();
+    const endIso   = new Date(nextMs).toISOString();
+
+    const days_in_cycle = Math.round((nextMs - startMs) / 86400000);
+    const is_current    = i === 0;
+
+    let day_index = null;
+    if (is_current) {
+      day_index = Math.min(Math.floor((now - startMs) / 86400000) + 1, days_in_cycle);
+    }
+
+    // Build label: "Jun 1 – Jun 30"
+    const fmtMD = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const incEnd = new Date(nextMs - 86400000);
+    const label = `${fmtMD.format(new Date(startMs))} – ${fmtMD.format(incEnd)}`;
+
+    let total_tokens = 0;
+    const sessions = new Set();
+    for (const t of turns) {
+      if (t.timestamp < startIso || t.timestamp >= endIso) continue;
+      total_tokens += t.input_tokens + t.output_tokens;
+      sessions.add(t.session_id);
+    }
+
+    cycles.push({ start_iso: startIso, end_iso: endIso, label, day_index, days_in_cycle, total_tokens, sessions: sessions.size, is_current });
+  }
+  return cycles;
+}
+
+// ----------------------------------------------------------------
+// buildCsvRows(records) — PURE. Returns full CSV string.
+// ponytail: no CSV escaping — all values are integers or a single-word model family
+// with no commas. Ceiling: a future field containing commas would break it.
+// Upgrade = quote fields.
+// ----------------------------------------------------------------
+function buildCsvRows(records) {
+  const header = 'month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model';
+  if (records.length === 0) return header;
+  const rows = records.map(r =>
+    [r.month_key, r.total_tokens, r.input_tokens, r.output_tokens, r.cache_read_tokens, r.sessions, r.active_days, r.top_model].join(',')
+  );
+  return [header, ...rows].join('\n');
+}
+
+// ----------------------------------------------------------------
+// exportHistoryCsv() — client-side download (dump 8.4).
+// ponytail: CSV source is monthly_cache (account_label='combined'), sorted ascending
+// (ORIGINATED order — dump does not specify; chronological is most natural for data export).
+// Edge: no records → header-only CSV (ORIGINATED; always does something predictable).
+// ----------------------------------------------------------------
+async function exportHistoryCsv() {
+  const all = await dbGetAll('monthly_cache');
+  const records = all
+    .filter(r => r.account_label === 'combined')
+    .sort((a, b) => a.month_key < b.month_key ? -1 : 1);
+  const csv = buildCsvRows(records);
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `burnboard-history-${new Date().toISOString().substring(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ----------------------------------------------------------------
+// renderHistory() — top-level, renders active history view into #panel-history
+// ----------------------------------------------------------------
+async function renderHistory() {
+  const panel = document.getElementById('panel-history');
+  if (!panel) return;
+
+  // Bind delegated click listener once only
+  if (!_historyBound) {
+    _historyBound = true;
+    panel.addEventListener('click', e => {
+      const btn = e.target.closest('[data-hview]');
+      if (btn) {
+        _historyView = btn.dataset.hview;
+        renderHistory();
+        return;
+      }
+      const exp = e.target.closest('[data-export-csv]');
+      if (exp) exportHistoryCsv();
+    });
+  }
+
+  // Header + controls
+  const viewBtns = ['monthly', 'weekly', 'billing'].map(v => {
+    const labels = { monthly: 'Monthly', weekly: 'Weekly', billing: 'Billing Cycle' };
+    return `<button class="btn-secondary${_historyView === v ? ' sel' : ''}" data-hview="${v}">${labels[v]}</button>`;
+  }).join('');
+
+  const header = `<div class="forecast-header"><h3>📅 your usage, over time.</h3></div>
+  <div class="history-header-row">
+    <div class="history-views">${viewBtns}</div>
+    <button class="btn-secondary" data-export-csv="1">↓ Export CSV</button>
+  </div>`;
+
+  panel.innerHTML = `<div class="dashboard-content">${header}<div id="history-body"></div></div>`;
+
+  // Render the active view
+  if (_historyView === 'monthly')  await renderMonthlyView();
+  else if (_historyView === 'weekly')   await renderWeeklyView();
+  else if (_historyView === 'billing')  await renderBillingView();
+}
+
+// ----------------------------------------------------------------
+// renderMonthlyView() — dump §8.1
+// ----------------------------------------------------------------
+async function renderMonthlyView() {
+  const el = document.getElementById('history-body');
+  if (!el) return;
+
+  const all = await dbGetAll('monthly_cache');
+  const records = all
+    .filter(r => r.account_label === 'combined')
+    .sort((a, b) => b.month_key > a.month_key ? 1 : -1) // newest-first
+    .slice(0, 12);
+
+  if (records.length === 0) {
+    // ORIGINATED: all-empty state copy
+    el.innerHTML = `<div class="chart-empty">no monthly history yet</div>`;
+    return;
+  }
+
+  // Month name from month_key
+  function monthLabel(mk) {
+    return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' })
+      .format(new Date(mk + '-01T00:00:00Z'));
+  }
+
+  const singleMonth = records.length === 1;
+
+  // For delta: records are newest-first; card i's prior = records[i+1]
+  const cards = records.map((r, i) => {
+    const prior = records[i + 1];
+    let deltaHtml = '';
+    if (!singleMonth && prior && prior.total_tokens > 0) {
+      const pct  = Math.round((r.total_tokens - prior.total_tokens) / prior.total_tokens * 100);
+      const sign = pct >= 0 ? '+' : '';
+      const priorShort = new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' })
+        .format(new Date(prior.month_key + '-01T00:00:00Z'));
+      const cls = pct >= 0 ? 'month-delta-up' : 'month-delta-down';
+      const arrow = pct >= 0 ? '↑' : '↓';
+      deltaHtml = `<div class="${cls}">${arrow} ${sign}${pct}% vs ${priorShort}</div>`;
+    } else if (singleMonth) {
+      deltaHtml = `<div style="font-size:12px;color:var(--mu)">not enough history yet</div>`;
+    }
+    const noData = r.total_tokens === 0;
+    // ponytail: Phase 4 renders only months present in monthly_cache (no synthetic gap-filling).
+    // Ceiling: gap months between active months are absent rather than shown faded.
+    // Upgrade = synthesize empty month records for gaps in the last-12 window.
+    return `<div class="month-card${noData ? ' no-data' : ''} au" style="animation-delay:${i * 30}ms">
+      <div class="month-card-header">${monthLabel(r.month_key)}</div>
+      <div class="month-card-tokens">${r.total_tokens.toLocaleString('en-US')}</div>
+      <div class="month-card-label">tokens</div>
+      <div class="month-card-meta">
+        <span class="mono">${r.sessions}</span> sessions &middot;
+        <span class="mono">${r.active_days}</span> active days &middot;
+        mostly ${r.top_model}${noData ? '<br><em>no activity</em>' : ''}
+      </div>
+      ${deltaHtml}
+    </div>`;
+  }).join('');
+
+  // Monthly comparison chart (oldest-left = reverse the newest-first cards)
+  const chartRecords = [...records].reverse();
+  const chartLabels  = chartRecords.map(r => new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' })
+    .format(new Date(r.month_key + '-01T00:00:00Z')));
+  const chartData    = chartRecords.map(r => r.total_tokens);
+
+  // Bar tint per top_model
+  // ponytail: tint keyed off top_model only (not a true opus-vs-sonnet ratio); matches dump wording.
+  // Upgrade = ratio-based blend.
+  const barColors = chartRecords.map(r => r.top_model === 'sonnet' ? '#38BDF8' : '#F97316');
+
+  // Rolling average overlay: trailing mean window=min(3,i+1)
+  // ponytail: months-axis trailing rolling mean (window 3), not a literal 30-day window.
+  // Ceiling: coarse on a monthly axis. Upgrade = true 30-day rolling series from daily buckets.
+  const rollingAvg = chartData.map((_, i) => {
+    const win = Math.min(3, i + 1);
+    const slice = chartData.slice(i - win + 1, i + 1);
+    return Math.round(slice.reduce((s, v) => s + v, 0) / win);
+  });
+
+  el.innerHTML = `<div class="month-grid">${cards}</div>
+    <div class="card au">
+      <div class="forecast-header"><h3>monthly comparison</h3><p>token totals by month</p></div>
+      <div class="monthly-chart-wrap"><canvas id="canvas-monthly"></canvas></div>
+    </div>`;
+
+  if (!window.Chart) return;
+  if (_monthlyChart) { _monthlyChart.destroy(); _monthlyChart = null; }
+
+  _monthlyChart = new Chart(document.getElementById('canvas-monthly'), {
+    data: {
+      labels: chartLabels,
+      datasets: [
+        {
+          type: 'bar',
+          data: chartData,
+          backgroundColor: barColors,
+          borderRadius: 4,
+          borderSkipped: false,
+        },
+        {
+          type: 'line',
+          data: rollingAvg,
+          borderColor: '#FB923C',
+          borderDash: [4, 4],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false,
+          tension: 0.3,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              if (ctx.datasetIndex === 1) return `avg: ${fmtTokens(ctx.raw)}`;
+              const r = chartRecords[ctx.dataIndex];
+              const avgPerDay = r.active_days > 0 ? Math.round(r.total_tokens / r.active_days) : 0;
+              return [
+                `${fmtTokens(r.total_tokens)} tokens`,
+                `${r.sessions} sessions`,
+                `${fmtTokens(avgPerDay)}/day avg`,
+              ];
+            },
+          },
+          titleFont: { family: 'JetBrains Mono' },
+          bodyFont:  { family: 'JetBrains Mono' },
+        },
+      },
+      scales: {
+        x: { ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#6B6460' }, grid: { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#6B6460', callback: v => fmtTokens(v) }, grid: { color: 'rgba(255,255,255,.04)' } },
+      },
+    },
+  });
+}
+
+// ----------------------------------------------------------------
+// renderWeeklyView() — dump §8.2
+// ----------------------------------------------------------------
+async function renderWeeklyView() {
+  const el = document.getElementById('history-body');
+  if (!el) return;
+
+  const allTurns = await dbGetAll('turns');
+  const buckets  = getWeeklyBuckets(allTurns, 12); // oldest-first
+
+  // Table: newest-first = iterate in reverse
+  const tableRows = [...buckets].reverse().map((b, i) => {
+    const isOldest    = i === buckets.length - 1;
+    const fadedCls    = b.total_tokens === 0 ? ' class="faded"' : '';
+    const opusHrs  = (b.opus_tokens   / TOKENS_PER_HOUR).toFixed(1);
+    const sonnetHrs= (b.sonnet_tokens / TOKENS_PER_HOUR).toFixed(1);
+    // vs prior: prior = next index in reverse iteration = chronologically earlier week
+    const priorIdx = buckets.length - 1 - i - 1;
+    let vsPrior = '—';
+    if (!isOldest && priorIdx >= 0) {
+      const prior = buckets[priorIdx];
+      if (prior.total_tokens > 0) {
+        const pct  = Math.round((b.total_tokens - prior.total_tokens) / prior.total_tokens * 100);
+        const sign = pct >= 0 ? '+' : '';
+        const cls  = pct >= 0 ? 'month-delta-up' : 'month-delta-down';
+        const arrow = pct >= 0 ? '↑' : '↓';
+        vsPrior = `<span class="${cls}">${arrow} ${sign}${pct}%</span>`;
+      }
+    }
+    return `<tr${fadedCls}>
+      <td>${b.label}</td>
+      <td class="mono">${b.total_tokens.toLocaleString('en-US')}</td>
+      <td class="mono">${opusHrs}h</td>
+      <td class="mono">${sonnetHrs}h</td>
+      <td class="mono">${b.sessions}</td>
+      <td>${vsPrior}</td>
+    </tr>`;
+  }).join('');
+
+  // Sparkline: oldest-left
+  const sparkData   = buckets.map(b => b.total_tokens);
+  const sparkLabels = buckets.map(b => b.label);
+
+  el.innerHTML = `<div class="card au">
+    <div class="forecast-header"><h3>weekly usage</h3><p>last 12 mon–sun weeks</p></div>
+    <table class="history-table">
+      <thead><tr>
+        <th>Week</th><th>Tokens</th><th>Opus hrs</th><th>Sonnet hrs</th><th>Sessions</th><th>vs prior</th>
+      </tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+    <div class="sparkline-wrap"><canvas id="canvas-weekly"></canvas></div>
+  </div>`;
+
+  if (!window.Chart) return;
+  if (_weeklyChart) { _weeklyChart.destroy(); _weeklyChart = null; }
+
+  _weeklyChart = new Chart(document.getElementById('canvas-weekly'), {
+    type: 'line',
+    data: {
+      labels: sparkLabels,
+      datasets: [{
+        data: sparkData,
+        fill: true,
+        backgroundColor: 'rgba(249,115,22,.15)',
+        borderColor: '#F97316',
+        pointRadius: 0,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${fmtTokens(ctx.raw)} tokens`,
+          },
+          titleFont: { family: 'JetBrains Mono' },
+          bodyFont:  { family: 'JetBrains Mono' },
+        },
+      },
+      scales: {
+        x: { ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#6B6460', maxRotation: 45 }, grid: { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#6B6460', callback: v => fmtTokens(v) }, grid: { color: 'rgba(255,255,255,.04)' } },
+      },
+    },
+  });
+}
+
+// ----------------------------------------------------------------
+// renderBillingView() — dump §8.3
+// ----------------------------------------------------------------
+async function renderBillingView() {
+  const el = document.getElementById('history-body');
+  if (!el) return;
+
+  const allTurns = await dbGetAll('turns');
+  const bsd = Number(_cfg.billing_start) || 1;
+  const cycles = getBillingCycles(allTurns, bsd, Date.now());
+
+  if (allTurns.length === 0) {
+    // ORIGINATED: billing empty state
+    el.innerHTML = `<div class="chart-empty">no billing history yet</div>`;
+    return;
+  }
+
+  const cur   = cycles[0];
+  const prior = cycles[1]; // prior complete cycle (may be undefined)
+
+  // vs same-point comparison
+  // ponytail: "same point" = prior-cycle tokens for turns within its first day_index elapsed days.
+  // Ceiling: day granularity. Upgrade = match by elapsed ms.
+  let vsSamePoint = '—';
+  if (prior && cur.day_index !== null) {
+    const priorAtPoint = allTurns.reduce((s, t) => {
+      if (t.timestamp < prior.start_iso) return s;
+      if (t.timestamp >= prior.start_iso && t.timestamp < new Date(new Date(prior.start_iso).getTime() + cur.day_index * 86400000).toISOString()) {
+        return s + t.input_tokens + t.output_tokens;
+      }
+      return s;
+    }, 0);
+    if (priorAtPoint > 0) {
+      const pct  = Math.round((cur.total_tokens - priorAtPoint) / priorAtPoint * 100);
+      const sign = pct >= 0 ? '+' : '';
+      const cls  = pct >= 0 ? 'month-delta-up' : 'month-delta-down';
+      vsSamePoint = `<span class="${cls}">${pct >= 0 ? '↑' : '↓'} ${sign}${pct}%</span>`;
+    }
+  }
+
+  // Progress bar vs prior cycle total
+  // ponytail: bar accent color = --accent (ORIGINATED — dump specifies no color rule here).
+  let progressHtml = '';
+  if (prior && prior.total_tokens > 0) {
+    const barPct = Math.round(cur.total_tokens / prior.total_tokens * 100);
+    const fillW  = Math.min(100, barPct);
+    progressHtml = `<div class="cycle-bar-label"><span class="mono">${barPct}</span>% of last cycle's total</div>
+      <div class="progress-track"><div class="progress-fill" style="width:${fillW}%;background:var(--accent)"></div></div>`;
+  }
+
+  const curCard = `<div class="cycle-card">
+    <div class="cycle-title" style="font-size:13px;color:var(--mu);margin-bottom:12px">
+      ${cur.label} &middot; day <span class="mono">${cur.day_index}</span> of <span class="mono">${cur.days_in_cycle}</span>
+    </div>
+    <div class="cycle-card-tokens">${cur.total_tokens.toLocaleString('en-US')}</div>
+    <div class="cycle-card-label" style="font-size:12px;color:var(--mu);margin-bottom:10px">tokens</div>
+    <div class="cycle-vs" style="font-size:13px;color:var(--mu);margin-bottom:12px">vs same point last cycle: ${vsSamePoint}</div>
+    ${progressHtml}
+  </div>`;
+
+  // Last 3 cycles table (cycles[1..3])
+  // vs avg: mean of completed cycles shown (current excluded)
+  // ponytail: "avg" = mean of completed cycles shown (exclude ongoing current); oldest shown as "base".
+  // Ceiling: small-sample average. Upgrade = longer baseline window.
+  // ORIGINATED: dump's `vs avg` example is illustrative; baseline defined here = mean of completed in view.
+  const completedCycles = cycles.slice(1); // prior 3 cycles
+  const avgTok = completedCycles.length > 0
+    ? completedCycles.reduce((s, c) => s + c.total_tokens, 0) / completedCycles.length
+    : 0;
+
+  const allTableCycles = cycles; // current + prior 3
+  const tableRows = allTableCycles.map((c, i) => {
+    const tokCell = c.is_current
+      ? `<span class="mono">${c.total_tokens.toLocaleString('en-US')}</span> <span style="color:var(--mu);font-size:11px">ongoing</span>`
+      : `<span class="mono">${c.total_tokens.toLocaleString('en-US')}</span>`;
+
+    let vsAvg = '—';
+    if (!c.is_current && avgTok > 0) {
+      // Oldest completed shown as "base"; others show % vs avg
+      const isOldest = i === allTableCycles.length - 1;
+      if (isOldest) {
+        vsAvg = 'base';
+      } else {
+        const pct  = Math.round((c.total_tokens - avgTok) / avgTok * 100);
+        const sign = pct >= 0 ? '+' : '';
+        const cls  = pct >= 0 ? 'month-delta-up' : 'month-delta-down';
+        vsAvg = `<span class="${cls}">${pct >= 0 ? '↑' : '↓'} ${sign}${pct}%</span>`;
+      }
+    }
+
+    const marker = c.is_current ? '● ' : '';
+    return `<tr>
+      <td>${marker}${c.label}</td>
+      <td>${tokCell}</td>
+      <td class="mono">${c.sessions}</td>
+      <td>${vsAvg}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `${curCard}
+  <div class="card au">
+    <div class="forecast-header"><h3>cycle history</h3><p>last 3 billing cycles</p></div>
+    <table class="history-table">
+      <thead><tr>
+        <th>Cycle</th><th>Total Tokens</th><th>Sessions</th><th>vs avg</th>
+      </tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+  </div>`;
+}
+
+// ================================================================
 // RENDER
 // ================================================================
 async function renderDashboard() {
@@ -1893,6 +2519,10 @@ document.getElementById('tab-bar').addEventListener('click', e => {
   btn.classList.add('active');
   const panel = document.getElementById('panel-' + btn.dataset.tab);
   if (panel) panel.classList.add('active');
+  // Phase 4 integration: render history on tab switch (fire-and-forget).
+  // ponytail: re-renders on every history-tab click (cheap; reads cache + turns).
+  // Upgrade = cache rendered DOM if it ever feels slow.
+  if (btn.dataset.tab === 'history') renderHistory();
 });
 
 // Filter bar — delegated handler (mirrors tab-bar pattern, dump 7.4)

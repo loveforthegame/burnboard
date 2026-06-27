@@ -1,58 +1,38 @@
-# Phase 3 Changes
+# Phase 4 Changes
 
-## Files modified
-1. `burnboard.html` — all Phase 3 code added inline (single-file convention)
-2. `burnboard.test.js` — extended with 54 new assertions (123 → 177 total)
+## Files changed
 
-## What changed in burnboard.html
+### `burnboard.html`
+- **CSS**: Added `/* Phase 4 — History (dump 8, 8.1-8.4) */` block with `.history-header-row`, `.history-views`, `.month-grid`, `.month-card`, `.month-delta-up/down`, `.history-table`, `.sparkline-wrap`, `.monthly-chart-wrap`, `.cycle-card`, and related helpers.
+- **runSync** (wiring point 1): Added `try { await recomputeMonthlyCache(); } catch (e) { ... }` after windows write, before `renderDashboard`. Does not block sync on failure.
+- **tab-bar handler** (wiring point 2): Added `if (btn.dataset.tab === 'history') renderHistory();` fire-and-forget call on tab switch.
+- **New functions** (all additive, Phase 4 only):
+  - `aggregateMonths(turns)` — pure, IDB-free. Groups turns by month_key, computes totals, top_model.
+  - `recomputeMonthlyCache()` — async wrapper; reads all turns, calls aggregateMonths, writes under `account_label:'combined'`.
+  - `getWeeklyBuckets(turns, n, now)` — pure. Returns n Mon–Sun UTC buckets, oldest-first. Reuses getMondayUTC.
+  - `getBillingCycles(turns, billingStartDay, now)` — pure. Returns current + 3 prior billing cycles using `_cfg.billing_start`.
+  - `buildCsvRows(records)` — pure. Returns full CSV string with exact spec columns.
+  - `exportHistoryCsv()` — async. Reads monthly_cache, calls buildCsvRows, downloads via Blob+URL.createObjectURL.
+  - `renderHistory()` — top-level. Binds delegated listener once, renders header + active view.
+  - `renderMonthlyView()` — 12-card grid + comparison bar chart with rolling-average overlay.
+  - `renderWeeklyView()` — 12-week table (newest-first) + sparkline (oldest-left).
+  - `renderBillingView()` — current-cycle card + last-3-cycles table.
 
-**CSS (added above `</style>`):**
-- `.btn-copy` + `.copied` success state (dump 4.5)
-- `.insight-card`, `.insight-title`, `.insight-body`, `.insight-copy-row` — insight card anatomy
-- `.sessions-table`, `.session-row`, `.session-detail-row`, `.session-detail`, `.detail-table` — sessions table + expanded detail
-- `.heavy-context` (background `--amdim`), `.heavy-label`, `.mini-bar-track`, `.mini-bar-fill`, `.chevron`
-- `.kv-list`, `.kv-row`, `.kv-label`, `.cost-table`, `.cost-note` — cost/summary grid
+### `burnboard.test.js`
+- Added 28 new tests (220 total, all pass). Four sections added:
+  - `getWeeklyBuckets` — bucket assignment, boundary (Monday 00:00 UTC), empty input, token aggregation.
+  - `aggregateMonths` — multi-month, sessions, active_days, top_model, tie-break.
+  - `getBillingCycles` — billing_start=1 and 15, day_index, days_in_cycle, turn assignment.
+  - `buildCsvRows` — header, empty, column order, cache_reads mapping, multi-row.
 
-**Constants block:**
-- Added `PRICING` constant (dump 16) with `ponytail:` comment for unknown-model ceiling
+## Riskiest / least-obvious parts for the tester
 
-**Pure compute helpers (before `loadDataLocal`):**
-- `localPeakRange(tz)` — extracts 13:00-19:00 UTC to local TZ string for Peak trigger
-- `fmtSessionDur(ms)` — dump 7.9 session duration format (distinct from `fmtDur`)
-- `relWhen(iso)` — dump 7.9 relative session time (distinct from `relTime`)
-- `computeInsights(allTurns, now)` — all 4 triggers, priority sort, max-3 slice
+1. **`recomputeMonthlyCache` try/catch in runSync** — if the recompute throws, sync and dashboard must still complete normally. The try/catch wraps only the recompute call; check that `renderDashboard` and `showScreen('app')` run even if recompute errors.
 
-**Data layer:**
-- `loadDataLocal()` — extended to call `computeInsights` and include `insights` in return (unfiltered path)
-- `loadFilteredData()` — extended to produce `recent_sessions`, `turns_by_session`, `cost_by_model`, `summary`, `total_api_cost_usd` (filtered path)
+2. **`getBillingCycles` when `now` < `billingStartDay`** — the current cycle started in the prior month. The month-rollback logic (`curMonth--; if < 0 wrap`) must be correct. Test with billing_start=15, now on the 10th of a month.
 
-**Render helpers added:**
-- `renderSessionsShell()`, `renderCostShell()` — empty card containers (same pattern as `renderChartsShell`)
-- `copyText(btn, text)` — clipboard with 1500ms revert
-- `renderInsights(d)` — reads from unfiltered `d.insights`; writes `window._insightCopies` for copy buttons
-- `renderSessions(fd)`, `renderTurnDetail(sessionId, fd)` — sessions table with lazy expand
-- `renderCostSummary(fd)` — two-column cost-by-model + summary kv-list
+3. **`getWeeklyBuckets` string-comparison timestamp bounds** — uses `ts < startIso || ts >= endIso` (ISO string lexicographic compare) rather than Date.getTime(). This is correct for ISO 8601 strings with UTC Z suffix (same byte-order) but would break for non-UTC formats. All timestamps in the app are stored as UTC ISO strings from `new Date().toISOString()`, so this is safe — but worth verifying on real sync data.
 
-**Wiring:**
-- `renderFilteredSections()` — extended to call `renderSessions(fd)` and `renderCostSummary(fd)`
-- `renderDashboard()` — extended to call `renderInsights(d)` and include shell placeholders
-- Dashboard-content click handler — extended to handle `[data-session-row]` for expand/collapse (one open at a time via `_openSession`); filter-bar branch unchanged
+4. **Chart destroy-before-recreate on view switches** — `_monthlyChart` and `_weeklyChart` module vars must be destroyed before `new Chart(...)` on every renderMonthlyView/renderWeeklyView call. Repeated history tab clicks should not throw "Canvas is already in use".
 
-**Self-check:**
-- Added SC14 (empty turns → no insights) and SC15/SC16 (fmtSessionDur boundaries)
-
-## What changed in burnboard.test.js
-- Added `PRICING`, `fmtSessionDur`, `relWhen`, `localPeakRange`, `computeInsights`, `computeFilteredDataP3` (pure extractions matching the HTML)
-- 54 new tests across: fmtSessionDur, relWhen, Spiral trigger (5 tests), Cache DANGER+WARNING (8 tests), Peak Penalty (3 tests), Opus Waste (5 tests), Priority/max-3 (2 tests), session aggregation (8 tests), context-growth/heavy-context (3 tests), cost_by_model (4 tests), summary (3 tests)
-
-## Riskiest parts for the Tester
-
-1. **Cache Alert boundary math** — the rate is `cache_read / (cache_read + input)`, not `cache_read / input`. The helper in tests uses exact integer values to hit 0.10/0.15/0.25 boundaries precisely. Any drift from the HTML implementation would cause boundary tests to fail. Verify tests pass against the HTML source, not just the test copy.
-
-2. **`_openSession` one-open-at-a-time logic** — the click handler closes the previous row before opening the new one, and a second click on the same row closes it. DOM-only; cannot be unit tested. Manually click: open row A, open row B (A should close), click B again (B should close).
-
-3. **Session row click handler vs filter-bar handler** — both are on `dashboard-content`. The session-row branch uses `return` after handling to prevent filter-bar code from running. Verify clicking a session row does not trigger a filter re-render.
-
-4. **`window._insightCopies` global** — set inside `renderInsights`. Copy buttons reference it via `_insightCopies[i]`. Safe because `renderInsights(d)` runs synchronously with `d.insights` already populated, but worth checking in browser console that `window._insightCopies` is an array after render.
-
-5. **`loadFilteredData` called twice on row expand** — once in `renderFilteredSections` (which renders the session table), and again lazily when a row is expanded to get `turns_by_session`. At single-user data volumes this is fine; the ponytail comment notes the upgrade path.
+5. **Delegated listener bound once** — `_historyBound` flag ensures the click listener on `#panel-history` is only attached once despite `renderHistory` being called on every tab switch. Verify no double-firing on second history tab click.

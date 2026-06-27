@@ -1823,6 +1823,399 @@ test('summary: zero turns → all fields zero', () => {
 //    appears in renderDashboard() body.
 
 // ================================================================
+// Phase 4 — pure functions copied verbatim from burnboard.html
+// ================================================================
+
+// Copied verbatim from burnboard.html Phase 4 additions
+function aggregateMonths(turns) {
+  const map = {};
+  for (const t of turns) {
+    const mk = t.month_key || t.timestamp.substring(0, 7);
+    if (!map[mk]) {
+      map[mk] = {
+        month_key: mk,
+        total_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0,
+        sessions: new Set(), active_days: new Set(),
+        opus: 0, sonnet: 0, haiku: 0,
+      };
+    }
+    const m = map[mk];
+    m.input_tokens       += t.input_tokens;
+    m.output_tokens      += t.output_tokens;
+    m.cache_read_tokens  += t.cache_read_tokens;
+    m.total_tokens       += t.input_tokens + t.output_tokens;
+    m.sessions.add(t.session_id);
+    m.active_days.add(t.timestamp.substring(0, 10));
+    const fam = modelFamily(t.model);
+    if (fam === 'opus')   m.opus   += t.input_tokens + t.output_tokens;
+    if (fam === 'sonnet') m.sonnet += t.input_tokens + t.output_tokens;
+    if (fam === 'haiku')  m.haiku  += t.input_tokens + t.output_tokens;
+  }
+  return Object.values(map).map(m => {
+    const ranked = [['opus', m.opus], ['sonnet', m.sonnet], ['haiku', m.haiku]]
+      .sort((a, b) => b[1] - a[1]);
+    return {
+      month_key:         m.month_key,
+      total_tokens:      m.total_tokens,
+      input_tokens:      m.input_tokens,
+      output_tokens:     m.output_tokens,
+      cache_read_tokens: m.cache_read_tokens,
+      sessions:          m.sessions.size,
+      active_days:       m.active_days.size,
+      top_model:         ranked[0][0],
+    };
+  });
+}
+
+function getWeeklyBuckets(turns, n = 12, now = Date.now()) {
+  const thisMonday = getMondayUTC(now);
+  const buckets = [];
+  for (let i = 0; i < n; i++) {
+    const startMs = thisMonday - i * 7 * 86400000;
+    const endMs   = startMs + 7 * 86400000;
+    const startDate = new Date(startMs);
+    const endDate   = new Date(endMs - 86400000);
+
+    const fmtMD  = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const fmtD   = new Intl.DateTimeFormat('en-US', { day: 'numeric', timeZone: 'UTC' });
+    const fmtMDe = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const startLabel = fmtMD.format(startDate);
+    const endLabel = startDate.getUTCMonth() !== endDate.getUTCMonth()
+      ? fmtMDe.format(endDate)
+      : fmtD.format(endDate);
+    const label = `${startLabel}–${endLabel}`;
+
+    const startIso = new Date(startMs).toISOString();
+    const endIso   = new Date(endMs).toISOString();
+    let total_tokens = 0, opus_tokens = 0, sonnet_tokens = 0;
+    const sessions = new Set();
+    for (const t of turns) {
+      const ts = t.timestamp;
+      if (ts < startIso || ts >= endIso) continue;
+      const tok = t.input_tokens + t.output_tokens;
+      total_tokens += tok;
+      const fam = modelFamily(t.model);
+      if (fam === 'opus')   opus_tokens   += tok;
+      if (fam === 'sonnet') sonnet_tokens += tok;
+      sessions.add(t.session_id);
+    }
+    buckets.push({ label, start_iso: startIso, total_tokens, opus_tokens, sonnet_tokens, sessions: sessions.size });
+  }
+  return buckets.reverse(); // oldest-first
+}
+
+function getBillingCycles(turns, billingStartDay, now) {
+  const bsd = Number(billingStartDay) || 1;
+  const nowDate  = new Date(now);
+  const nowDay   = nowDate.getUTCDate();
+  const nowMonth = nowDate.getUTCMonth();
+  const nowYear  = nowDate.getUTCFullYear();
+
+  let curYear = nowYear, curMonth = nowMonth;
+  if (nowDay < bsd) {
+    curMonth--;
+    if (curMonth < 0) { curMonth = 11; curYear--; }
+  }
+
+  const cycles = [];
+  for (let i = 0; i < 4; i++) {
+    let sy = curYear, sm = curMonth - i;
+    while (sm < 0) { sm += 12; sy--; }
+    const startMs = Date.UTC(sy, sm, bsd);
+    const nextMs  = Date.UTC(sy, sm + 1, bsd);
+
+    const startIso = new Date(startMs).toISOString();
+    const endIso   = new Date(nextMs).toISOString();
+    const days_in_cycle = Math.round((nextMs - startMs) / 86400000);
+    const is_current = i === 0;
+
+    let day_index = null;
+    if (is_current) {
+      day_index = Math.min(Math.floor((now - startMs) / 86400000) + 1, days_in_cycle);
+    }
+
+    const fmtMD = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    const incEnd = new Date(nextMs - 86400000);
+    const label = `${fmtMD.format(new Date(startMs))} – ${fmtMD.format(incEnd)}`;
+
+    let total_tokens = 0;
+    const sessions = new Set();
+    for (const t of turns) {
+      if (t.timestamp < startIso || t.timestamp >= endIso) continue;
+      total_tokens += t.input_tokens + t.output_tokens;
+      sessions.add(t.session_id);
+    }
+    cycles.push({ start_iso: startIso, end_iso: endIso, label, day_index, days_in_cycle, total_tokens, sessions: sessions.size, is_current });
+  }
+  return cycles;
+}
+
+function buildCsvRows(records) {
+  const header = 'month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model';
+  if (records.length === 0) return header;
+  const rows = records.map(r =>
+    [r.month_key, r.total_tokens, r.input_tokens, r.output_tokens, r.cache_read_tokens, r.sessions, r.active_days, r.top_model].join(',')
+  );
+  return [header, ...rows].join('\n');
+}
+
+// ================================================================
+// Phase 4 — getWeeklyBuckets
+// ================================================================
+console.log('\nPhase 4 — getWeeklyBuckets');
+
+// Fixed Monday 2026-06-22 00:00 UTC as "now" for all weekly tests
+// (getWeeklyBuckets takes now as 3rd argument)
+const MONDAY_JUN22 = new Date('2026-06-22T00:00:00Z').getTime(); // Mon
+const NOW_JUN22_MID = MONDAY_JUN22 + 3 * 86400000; // Wed Jun 24 (inside current week)
+
+test('returns n buckets, oldest-first', () => {
+  const bkts = getWeeklyBuckets([], 12, NOW_JUN22_MID);
+  eq(bkts.length, 12);
+  // oldest-first: bucket[0].start_iso < bucket[11].start_iso
+  assert.ok(bkts[0].start_iso < bkts[11].start_iso, 'oldest first');
+});
+
+test('empty turns → all buckets zero tokens, length n', () => {
+  const bkts = getWeeklyBuckets([], 12, NOW_JUN22_MID);
+  eq(bkts.length, 12);
+  assert.ok(bkts.every(b => b.total_tokens === 0), 'all zero');
+  assert.ok(bkts.every(b => b.sessions === 0), 'all zero sessions');
+});
+
+test('turn inside current week lands in newest bucket (last)', () => {
+  const t = turn({ timestamp: '2026-06-23T10:00:00Z', input_tokens: 1000, output_tokens: 500 }); // Tue Jun 23 inside Jun 22-28
+  const bkts = getWeeklyBuckets([t], 12, NOW_JUN22_MID);
+  const newest = bkts[bkts.length - 1];
+  eq(newest.total_tokens, 1500);
+  eq(newest.sessions, 1);
+});
+
+test('turn 8 days before Monday lands in week 1 (second newest)', () => {
+  // Mon Jun 22 - 8 days = Sun Jun 14, which is in the week Jun 8-14 (2 prior weeks back)
+  // Second newest bucket = Jun 15-21. Jun 14 is in Jun 8-14 (third newest, bkts[length-3]).
+  // Use Jun 16 instead: Jun 22 - 6 days = Tue Jun 16 = in week Jun 15-21 = second newest.
+  const t = turn({ timestamp: '2026-06-16T10:00:00Z', input_tokens: 2000, output_tokens: 0 });
+  const bkts = getWeeklyBuckets([t], 12, NOW_JUN22_MID);
+  const secondNewest = bkts[bkts.length - 2]; // week Jun 15-21
+  eq(secondNewest.total_tokens, 2000);
+});
+
+test('turn at exactly thisMonday 00:00 UTC is in current week (>= start)', () => {
+  // thisMonday = Jun 22 00:00 UTC; a turn at that instant must be in the current (newest) bucket
+  const t = turn({ timestamp: '2026-06-22T00:00:00Z', input_tokens: 100, output_tokens: 0 });
+  const bkts = getWeeklyBuckets([t], 12, NOW_JUN22_MID);
+  const newest = bkts[bkts.length - 1];
+  eq(newest.total_tokens, 100);
+});
+
+test('turn one ms before Monday is in prior week', () => {
+  // 2026-06-21T23:59:59.999Z = Sun Jun 21, one ms before Mon Jun 22
+  const t = turn({ timestamp: '2026-06-21T23:59:59.999Z', input_tokens: 300, output_tokens: 0 });
+  const bkts = getWeeklyBuckets([t], 12, NOW_JUN22_MID);
+  const secondNewest = bkts[bkts.length - 2]; // Jun 15-21
+  eq(secondNewest.total_tokens, 300);
+});
+
+test('opus_tokens and sonnet_tokens aggregate correctly', () => {
+  const opus   = turn({ timestamp: '2026-06-23T10:00:00Z', model: 'claude-opus-4-5',   input_tokens: 1000, output_tokens: 500, session_id: 'a' });
+  const sonnet = turn({ timestamp: '2026-06-23T11:00:00Z', model: 'claude-sonnet-3-7', input_tokens: 200,  output_tokens: 100, session_id: 'b' });
+  const bkts = getWeeklyBuckets([opus, sonnet], 12, NOW_JUN22_MID);
+  const newest = bkts[bkts.length - 1];
+  eq(newest.opus_tokens,   1500);
+  eq(newest.sonnet_tokens, 300);
+  eq(newest.total_tokens,  1800);
+  eq(newest.sessions, 2);
+});
+
+// ================================================================
+// Phase 4 — aggregateMonths
+// ================================================================
+console.log('\nPhase 4 — aggregateMonths');
+
+test('empty turns → empty array', () => {
+  eq(aggregateMonths([]).length, 0);
+});
+
+test('single month: total_tokens = input + output', () => {
+  const t = turn({ timestamp: '2026-06-15T10:00:00Z', month_key: '2026-06', input_tokens: 1000, output_tokens: 500, cache_read_tokens: 100 });
+  const [m] = aggregateMonths([t]);
+  eq(m.total_tokens, 1500);
+  eq(m.input_tokens, 1000);
+  eq(m.output_tokens, 500);
+  eq(m.cache_read_tokens, 100);
+});
+
+test('two months: separate records', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', month_key: '2026-06', input_tokens: 1000, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-07-01T10:00:00Z', month_key: '2026-07', input_tokens: 2000, output_tokens: 0 });
+  const months = aggregateMonths([t1, t2]);
+  eq(months.length, 2);
+  const jun = months.find(m => m.month_key === '2026-06');
+  const jul = months.find(m => m.month_key === '2026-07');
+  eq(jun.total_tokens, 1000);
+  eq(jul.total_tokens, 2000);
+});
+
+test('sessions = distinct session_id count', () => {
+  const t1 = turn({ session_id: 'A', month_key: '2026-06', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ session_id: 'B', month_key: '2026-06', input_tokens: 200, output_tokens: 0 });
+  const t3 = turn({ session_id: 'A', month_key: '2026-06', input_tokens: 50,  output_tokens: 0, timestamp: '2026-06-20T10:00:00Z' });
+  const [m] = aggregateMonths([t1, t2, t3]);
+  eq(m.sessions, 2); // A and B
+});
+
+test('active_days = distinct UTC day count', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', month_key: '2026-06', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-15T22:00:00Z', month_key: '2026-06', input_tokens: 200, output_tokens: 0 });
+  const t3 = turn({ timestamp: '2026-06-20T10:00:00Z', month_key: '2026-06', input_tokens: 50,  output_tokens: 0 });
+  const [m] = aggregateMonths([t1, t2, t3]);
+  eq(m.active_days, 2); // Jun 15 and Jun 20
+});
+
+test('top_model = dominant family by token volume', () => {
+  const opus   = turn({ model: 'claude-opus-4-5',   month_key: '2026-06', input_tokens: 5000, output_tokens: 0 });
+  const sonnet = turn({ model: 'claude-sonnet-3-7', month_key: '2026-06', input_tokens: 1000, output_tokens: 0 });
+  const [m] = aggregateMonths([opus, sonnet]);
+  eq(m.top_model, 'opus');
+});
+
+test('top_model tie → opus wins (opus>sonnet>haiku stable order)', () => {
+  const opus   = turn({ model: 'claude-opus-4-5',   month_key: '2026-06', input_tokens: 1000, output_tokens: 0 });
+  const sonnet = turn({ model: 'claude-sonnet-3-7', month_key: '2026-06', input_tokens: 1000, output_tokens: 0 });
+  const [m] = aggregateMonths([opus, sonnet]);
+  eq(m.top_model, 'opus');
+});
+
+test('uses month_key from turn field (not re-deriving from timestamp)', () => {
+  // turn has month_key='2026-05' but timestamp in June — month_key wins
+  const t = turn({ timestamp: '2026-06-15T10:00:00Z', month_key: '2026-05', input_tokens: 100, output_tokens: 0 });
+  const [m] = aggregateMonths([t]);
+  eq(m.month_key, '2026-05');
+});
+
+// ================================================================
+// Phase 4 — getBillingCycles
+// ================================================================
+console.log('\nPhase 4 — getBillingCycles');
+
+// Fixed: Jun 28, 2026, UTC (day 28 of month)
+const JUN_28 = new Date('2026-06-28T12:00:00Z').getTime();
+// Fixed: Jun 10, 2026 (day 10 of month)
+const JUN_10 = new Date('2026-06-10T12:00:00Z').getTime();
+// Fixed: Feb 28, 2026 (end of Feb, cycle that spans Jan→Feb)
+const FEB_28_2026 = new Date('2026-02-28T12:00:00Z').getTime();
+
+test('billing_start=1, now=Jun28: current cycle is Jun 1 – Jun 30', () => {
+  const cycles = getBillingCycles([], 1, JUN_28);
+  eq(cycles[0].is_current, true);
+  eq(cycles[0].start_iso, new Date(Date.UTC(2026, 5, 1)).toISOString()); // Jun 1 UTC
+});
+
+test('billing_start=1, now=Jun28: day_index=28', () => {
+  const cycles = getBillingCycles([], 1, JUN_28);
+  eq(cycles[0].day_index, 28);
+});
+
+test('billing_start=15, now=Jun10: current cycle started May 15 (not Jun 15)', () => {
+  // Jun 10 < day 15 → cycle started May 15
+  const cycles = getBillingCycles([], 15, JUN_10);
+  const expectedStart = new Date(Date.UTC(2026, 4, 15)).toISOString(); // May 15 UTC
+  eq(cycles[0].start_iso, expectedStart);
+  eq(cycles[0].is_current, true);
+});
+
+test('billing_start=15, now=Jun10: day_index correct (day 27 of 31-day cycle)', () => {
+  // May 15 → Jun 15: 31 days. Jun 10 = May 15 + 26 days → day_index=27
+  const cycles = getBillingCycles([], 15, JUN_10);
+  eq(cycles[0].day_index, 27);
+});
+
+test('days_in_cycle correct across month boundary (Jan 1 → Feb 1 = 31 days)', () => {
+  const jan15 = new Date('2026-01-15T12:00:00Z').getTime();
+  const cycles = getBillingCycles([], 1, jan15);
+  eq(cycles[0].days_in_cycle, 31); // Jan: 31 days
+});
+
+test('day_index clamped to days_in_cycle', () => {
+  // Set now to last ms of a 31-day cycle to confirm day_index does not exceed days_in_cycle
+  const startMs = Date.UTC(2026, 5, 1); // Jun 1
+  const nowEdge = startMs + 30 * 86400000 + 3600000; // Jun 1 + 30 days + 1h (inside Jun 31? → wraps to Jul 1)
+  // Actually: Jun has 30 days; cycle 1→Jul 1. day 31 would exceed, but clamp should cap it.
+  // Let's use a billing_start=1 cycle for June (30 days): day 31 would overshoot.
+  // Simulate: now = Jun 1 + 35 days = Jul 6 (after cycle ends — next cycle already started)
+  // We want to test the clamp for the *current* cycle, so keep now within the cycle.
+  // Instead: billing_start=28, Feb 2026: Feb 28 → Mar 28 (28 days in cycle).
+  // Now = Feb 28 itself → day_index = floor(0/86400000)+1 = 1. days_in_cycle = 28.
+  const feb28Start = Date.UTC(2026, 1, 28); // Feb 28 UTC
+  const nowFeb28 = feb28Start + 500; // just after start
+  const cycles = getBillingCycles([], 28, nowFeb28);
+  const cur = cycles[0];
+  assert.ok(cur.day_index <= cur.days_in_cycle, `day_index ${cur.day_index} <= days_in_cycle ${cur.days_in_cycle}`);
+});
+
+test('turn inside cycle is counted; turn outside is not', () => {
+  const inTurn  = turn({ timestamp: '2026-06-15T10:00:00Z', input_tokens: 1000, output_tokens: 0 }); // in Jun 1-Jul 1 cycle
+  const outTurn = turn({ timestamp: '2026-05-15T10:00:00Z', input_tokens: 5000, output_tokens: 0 }); // in May cycle
+  const cycles = getBillingCycles([inTurn, outTurn], 1, JUN_28);
+  const cur = cycles[0]; // current = Jun
+  eq(cur.total_tokens, 1000);
+});
+
+test('returns 4 cycles total', () => {
+  const cycles = getBillingCycles([], 1, JUN_28);
+  eq(cycles.length, 4);
+});
+
+// ================================================================
+// Phase 4 — buildCsvRows
+// ================================================================
+console.log('\nPhase 4 — buildCsvRows');
+
+test('header row is exactly the spec columns', () => {
+  const csv = buildCsvRows([]);
+  const header = csv.split('\n')[0];
+  eq(header, 'month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model');
+});
+
+test('empty records → header-only (no extra newline)', () => {
+  const csv = buildCsvRows([]);
+  eq(csv, 'month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model');
+});
+
+test('one record: raw integers, cache_reads maps from cache_read_tokens', () => {
+  const rec = { month_key: '2026-06', total_tokens: 150000, input_tokens: 100000, output_tokens: 50000, cache_read_tokens: 8000, sessions: 5, active_days: 12, top_model: 'sonnet' };
+  const csv = buildCsvRows([rec]);
+  const lines = csv.split('\n');
+  eq(lines.length, 2);
+  eq(lines[1], '2026-06,150000,100000,50000,8000,5,12,sonnet');
+});
+
+test('column order matches spec exactly', () => {
+  const rec = { month_key: '2026-05', total_tokens: 1, input_tokens: 2, output_tokens: 3, cache_read_tokens: 4, sessions: 5, active_days: 6, top_model: 'opus' };
+  const row = buildCsvRows([rec]).split('\n')[1];
+  const parts = row.split(',');
+  eq(parts[0], '2026-05');  // month
+  eq(parts[1], '1');         // total_tokens
+  eq(parts[2], '2');         // input_tokens
+  eq(parts[3], '3');         // output_tokens
+  eq(parts[4], '4');         // cache_reads (from cache_read_tokens)
+  eq(parts[5], '5');         // sessions
+  eq(parts[6], '6');         // active_days
+  eq(parts[7], 'opus');      // top_model
+});
+
+test('multiple records produce correct row count', () => {
+  const recs = [
+    { month_key: '2026-01', total_tokens: 100, input_tokens: 60, output_tokens: 40, cache_read_tokens: 0, sessions: 1, active_days: 1, top_model: 'haiku' },
+    { month_key: '2026-02', total_tokens: 200, input_tokens: 120, output_tokens: 80, cache_read_tokens: 10, sessions: 2, active_days: 3, top_model: 'sonnet' },
+  ];
+  const csv = buildCsvRows(recs);
+  const lines = csv.split('\n');
+  eq(lines.length, 3); // header + 2 rows
+});
+
+// ================================================================
 // Summary
 // ================================================================
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
