@@ -84,3 +84,33 @@ note: ponytail fix confirmed (lines 1589-91, ceiling+upgrade path), additive onl
 ## 2026-06-28 00:21 — product-qa · feature: phase-3-insights-and-sessions
 status: QA PASS
 note: 192/192, all 6 ACs pass. triggers fire/silent at exact thresholds, priority/max-3 + DANGER-suppresses-WARNING correct, filter-scope split correct. minor obs: expanded turn-detail has a "Context" header (for required mini-bar) not literally named in dump 7.9 — reviewer passed it, not a defect.
+
+## 2026-06-28 00:25 — RUN START · feature: phase-4-history-and-export
+request: /ship next phase (phase 4)
+branch: ship/20260628-002500-phase-4-history-export
+base: phase 3 (83f5cd6, on master)
+note: confirmed for user — phases 1,2,3 each done once; phase 4 is genuinely next, not a redo.
+
+## 2026-06-28 00:28 — planner · feature: phase-4-history-and-export
+status: spec written (no open questions)
+note: history tab (monthly/weekly/billing) + CSV export. billing key reconciled -> reads existing billing_start (no new key). 2 integration points: recomputeMonthlyCache post-sync, renderHistory in tab handler. monthly_cache written under 'combined' label (phase 5 collision-free). test seams: getWeeklyBuckets, aggregateMonths, getBillingCycles, buildCsvRows.
+
+## 2026-06-28 00:34 — coder · feature: phase-4-history-and-export
+status: implemented
+files: burnboard.html (2 wiring edits + ~380 additive lines), burnboard.test.js (+28 = 220 total)
+note: 4 pure seams (aggregateMonths, getWeeklyBuckets, getBillingCycles, buildCsvRows). recomputeMonthlyCache writes 'combined'. reads existing billing_start. riskiest = monthly cache aggregation + billing cycle boundary math.
+
+## 2026-06-28 00:42 — DIRECTIVE (user, standing) · autonomous through end
+1. finish phase 4 pipeline (tester running) -> reviewer -> QA
+2. push phase 4 to github on QA pass
+3. ship phases 5+6 TOGETHER as one combined pipeline (planner->coder->tester->reviewer->QA), one combined spec
+4. push combined result to github
+do NOT pause for user between gates ("go ahead dont wait"). stay accurate — no skipped gates. serialize (5/6 start only after phase 4 committed; same file).
+
+## 2026-06-28 00:44 — tester · feature: phase-4-history-and-export
+status: tests passed
+note: 238/238 (+18). weekly Monday-boundary single-count, zero-week retained; aggregateMonths top_model + fallback; billing cycle half-open boundary, year rollback, Feb/28-day caps; CSV no-escape safe.
+
+## 2026-06-28 00:46 — reviewer · feature: phase-4-history-and-export
+status: VERDICT: SHIP
+note: diff purely additive (+630/-0 html), phase 1/2/3 untouched. billing_start key confirmed (no duplicate billing_start_day in code). all 10 ponytails present, scope guard honored. 2 cosmetic non-blocking notes.
