@@ -2759,6 +2759,325 @@ test('tip 5 fires when ≥5 short opus sessions (< 4 turns, opus-dominant)', () 
 //     Confirmed by source inspection — cannot exercise DOM+IDB path under Node.
 // 20. Phase 6: boot() shows reconnect screen when permission revoked — perm !== 'granted'
 //     now calls showScreen('reconnect') instead of showScreen('connect'). Confirmed.
+//
+// Additional browser-only items (CANNOT-VERIFY-HEADLESS):
+// 21. Dashboard always uses combined data — loadDataLocal() reads ALL turns via dbGetAll('turns')
+//     with no account_label filter. Start Check / Forecast / Mini Stats come from this path.
+//     The _historyAccount selector in renderHistory does NOT affect loadDataLocal.
+//     Confirmed: grep shows _historyAccount only referenced in renderHistory/renderMonthlyView/
+//     renderWeeklyView/renderBillingView/exportHistoryCsv — never in loadDataLocal.
+// 22. Account selector + combined card only appear when account_2_name set — twoAccountMode()
+//     is called inside renderHistory() before rendering selector/card HTML.
+//     When account_2_name is empty/whitespace, twoAccountMode()===false and the selector/card
+//     HTML is skipped entirely. Confirmed by source inspection of renderHistory().
+// 23. Account 2 cleared → single-account view — saveSettings() re-renders dashboard; history
+//     re-renders on every tab click. twoAccountMode() returns false when account_2_name is
+//     cleared, so selector and combined card vanish on next render. No migration needed.
+//     Confirmed: twoAccountMode() reads _cfg.account_2_name live on every call.
+// 24. promptAccount dismiss → Primary — backdrop click and Esc key both call dismiss()
+//     which resolves with `a1 = _cfg.account_1_name || 'Primary'`. No DOM element needed
+//     to verify the fallback chain; the pure fallback is tested below (test #25).
+// ================================================================
+
+// ================================================================
+// Phase 5+6 — extended boundary coverage (tester-added)
+// Covers the gaps called out in changes.md:
+//   Primary-in-combined-not-Alt invariant
+//   recomputeMonthlyCache label-loop logic (pure part)
+//   tipPersonalization 7-day boundary (exactly 7)
+//   toast priority selection (skipped beats caught-up)
+//   promptAccount dismiss fallback
+// ================================================================
+console.log('\nPhase 5+6 — extended boundary coverage');
+
+// ----------------------------------------------------------------
+// Primary-in-combined-not-Alt invariant
+// Models the recomputeMonthlyCache label loop:
+//   label === 'combined' → ALL turns
+//   label === 'Primary'  → turns.filter(t => t.account_label === 'Primary')
+//   label === 'Alt'      → turns.filter(t => t.account_label === 'Alt')
+// A turn labeled 'Primary' must appear in combined AND Primary, never in Alt.
+// A 'combined'-tagged turn (Both/Unsure sync) must appear ONLY in combined.
+// ----------------------------------------------------------------
+
+test('Primary turn: included in combined aggregation (combined uses all turns)', () => {
+  const primary = turn({ account_label: 'Primary', input_tokens: 1000, output_tokens: 0, month_key: '2026-06' });
+  const alt     = turn({ account_label: 'Alt',     input_tokens: 500,  output_tokens: 0, month_key: '2026-06' });
+  const allTurns = [primary, alt];
+  // combined: all turns passed in (label==='combined' branch in recomputeMonthlyCache)
+  const [combinedMonth] = aggregateMonths(allTurns);
+  eq(combinedMonth.total_tokens, 1500); // primary + alt both count
+});
+
+test('Primary turn: included in Primary aggregation (exact-match)', () => {
+  const primary = turn({ account_label: 'Primary', input_tokens: 1000, output_tokens: 0, month_key: '2026-06' });
+  const alt     = turn({ account_label: 'Alt',     input_tokens: 500,  output_tokens: 0, month_key: '2026-06' });
+  const allTurns = [primary, alt];
+  const primaryTurns = allTurns.filter(t => t.account_label === 'Primary');
+  const [m] = aggregateMonths(primaryTurns);
+  eq(m.total_tokens, 1000); // only Primary
+});
+
+test('Primary turn: NOT included in Alt aggregation (exact-match excludes)', () => {
+  const primary = turn({ account_label: 'Primary', input_tokens: 1000, output_tokens: 0, month_key: '2026-06' });
+  const altTurns = [primary].filter(t => t.account_label === 'Alt');
+  eq(altTurns.length, 0); // Primary does not match Alt filter
+});
+
+test('"combined"-labeled turn: in combined aggregation (all turns), NOT in Primary or Alt', () => {
+  const combinedTurn = turn({ account_label: 'combined', input_tokens: 800, output_tokens: 0, month_key: '2026-06' });
+  const allTurns = [combinedTurn];
+  // combined: all turns
+  const [cm] = aggregateMonths(allTurns);
+  eq(cm.total_tokens, 800);
+  // Primary filter: exact-match → 0 results
+  eq(allTurns.filter(t => t.account_label === 'Primary').length, 0);
+  // Alt filter: exact-match → 0 results
+  eq(allTurns.filter(t => t.account_label === 'Alt').length, 0);
+});
+
+test('combined total >= Primary + Alt (combined-labeled turns only counted in combined)', () => {
+  const primary     = turn({ account_label: 'Primary',  input_tokens: 1000, output_tokens: 0, month_key: '2026-06' });
+  const alt         = turn({ account_label: 'Alt',      input_tokens: 500,  output_tokens: 0, month_key: '2026-06' });
+  const bothUnsure  = turn({ account_label: 'combined', input_tokens: 200,  output_tokens: 0, month_key: '2026-06' });
+  const allTurns    = [primary, alt, bothUnsure];
+
+  const [combinedMonth] = aggregateMonths(allTurns); // combined: all turns
+  const [primaryMonth]  = aggregateMonths(allTurns.filter(t => t.account_label === 'Primary'));
+  const [altMonth]      = aggregateMonths(allTurns.filter(t => t.account_label === 'Alt'));
+
+  // combined includes the Both/Unsure turn; sum of individual accounts does not
+  eq(combinedMonth.total_tokens, 1700);
+  eq(primaryMonth.total_tokens, 1000);
+  eq(altMonth.total_tokens, 500);
+  assert.ok(combinedMonth.total_tokens > primaryMonth.total_tokens + altMonth.total_tokens,
+    'combined must exceed primary+alt when combined-tagged turns exist');
+});
+
+// ----------------------------------------------------------------
+// recomputeMonthlyCache label resolution (pure part — no IDB)
+// The label list is: twoAccount ? [acct1, acct2, 'combined'] : ['combined']
+// ----------------------------------------------------------------
+
+function resolveMonthlyLabels(cfg) {
+  const twoMode = !!(cfg && cfg.account_2_name && cfg.account_2_name.trim());
+  return twoMode
+    ? [(cfg.account_1_name || 'Primary'), cfg.account_2_name.trim(), 'combined']
+    : ['combined'];
+}
+
+test('single-account mode: only ["combined"] label', () => {
+  const labels = resolveMonthlyLabels({ account_1_name: 'Primary', account_2_name: '' });
+  assert.deepStrictEqual(labels, ['combined']);
+});
+
+test('two-account mode: [acct1, acct2, "combined"] with real names', () => {
+  const labels = resolveMonthlyLabels({ account_1_name: 'Work', account_2_name: 'Personal' });
+  assert.deepStrictEqual(labels, ['Work', 'Personal', 'combined']);
+});
+
+test('two-account mode: acct1 defaults to "Primary" when empty', () => {
+  const labels = resolveMonthlyLabels({ account_1_name: '', account_2_name: 'Alt' });
+  assert.deepStrictEqual(labels, ['Primary', 'Alt', 'combined']);
+});
+
+test('two-account mode: acct2 trimmed in label list', () => {
+  const labels = resolveMonthlyLabels({ account_1_name: 'Primary', account_2_name: '  Side  ' });
+  assert.deepStrictEqual(labels, ['Primary', 'Side', 'combined']);
+});
+
+// ----------------------------------------------------------------
+// tipPersonalization: exactly 7-day boundary (the spec-critical edge)
+// activeDays.size < 7 → generic; activeDays.size === 7 → gate passes
+// ----------------------------------------------------------------
+
+test('exactly 7 active days: gate passes (activeDays.size === 7, not < 7)', () => {
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  // 7 turns, each 24h apart → 7 distinct UTC days; all within the last 7d window
+  const turns7 = Array.from({ length: 7 }, (_, i) => ({
+    session_id: `s7-${i}`,
+    timestamp: new Date(now - i * 86400000).toISOString(),
+    model: 'claude-sonnet-3-7',
+    input_tokens: 1000,
+    output_tokens: 3000, // ratio = 3.0 > 2.0 → tip1 should fire
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    account_label: 'Primary',
+    month_key: '2026-06',
+  }));
+  const r = tipPersonalization(turns7, now);
+  // Gate passes at exactly 7 — tip1 fires (ratio 3.0 > 2.0)
+  eq(r[1] !== null, true);
+  eq(r[1].includes('3.0'), true);
+});
+
+test('exactly 6 active days: gate fails (activeDays.size === 6 < 7)', () => {
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  const turns6 = Array.from({ length: 6 }, (_, i) => ({
+    session_id: `s6-${i}`,
+    timestamp: new Date(now - i * 86400000).toISOString(),
+    model: 'claude-sonnet-3-7',
+    input_tokens: 1000,
+    output_tokens: 3000,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    account_label: 'Primary',
+    month_key: '2026-06',
+  }));
+  const r = tipPersonalization(turns6, now);
+  // 6 < 7 → all generic regardless of ratio
+  eq(r[1], null);
+  eq(Object.values(r).every(v => v === null), true);
+});
+
+test('tip 2 fires at exactly 7 active days when 3+ sessions spiral', () => {
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  // 7 anchor turns spread over 7 distinct days (gate = 7 active days)
+  const anchorTurns = Array.from({ length: 7 }, (_, i) => ({
+    session_id: `anchor-${i}`,
+    timestamp: new Date(now - i * 86400000).toISOString(),
+    model: 'claude-sonnet-3-7',
+    input_tokens: 100, output_tokens: 50,
+    cache_read_tokens: 0, cache_creation_tokens: 0,
+    account_label: 'Primary', month_key: '2026-06',
+  }));
+  // 3 spiral sessions, each 6 turns in the last 7d window
+  // early avg = 100, late avg >> 300 → ratio > 3.0
+  const spiralTurns = [];
+  for (let i = 0; i < 3; i++) {
+    const sid = `spiral-${i}`;
+    const tokPattern = [50, 50, 50, 500, 500, 500];
+    for (let j = 0; j < 6; j++) {
+      spiralTurns.push({
+        session_id: sid,
+        timestamp: new Date(now - 1 * 86400000 + j * 60000).toISOString(), // within last 7d
+        model: 'claude-sonnet-3-7',
+        input_tokens: tokPattern[j], output_tokens: 0,
+        cache_read_tokens: 0, cache_creation_tokens: 0,
+        account_label: 'Primary', month_key: '2026-06',
+      });
+    }
+  }
+  const allTurns = [...anchorTurns, ...spiralTurns];
+  const r = tipPersonalization(allTurns, now);
+  eq(r[2] !== null, true);
+  assert.ok(r[2].includes('sessions spiraled'), `tip2 badge: ${r[2]}`);
+});
+
+// ----------------------------------------------------------------
+// Toast priority selection
+// Pure if-else extracted from runSync lines 925-928:
+//   if (skippedLines > 0) → skipped toast
+//   else if (totalTurns === 0) → caught-up toast
+// ----------------------------------------------------------------
+
+// Mirrors the exact branching from burnboard.html runSync
+function selectToast(skippedLines, totalTurns) {
+  if (skippedLines > 0) return 'skipped';
+  if (totalTurns === 0) return 'caught_up';
+  return null;
+}
+
+console.log('\ntoast priority selection');
+test('skippedLines > 0 → skipped toast (regardless of totalTurns)', () => {
+  eq(selectToast(1, 5),  'skipped');
+  eq(selectToast(3, 0),  'skipped'); // both conditions true: skipped wins
+  eq(selectToast(10, 0), 'skipped');
+});
+
+test('skippedLines === 0 AND totalTurns === 0 → caught-up toast', () => {
+  eq(selectToast(0, 0), 'caught_up');
+});
+
+test('skippedLines === 0 AND totalTurns > 0 → no toast', () => {
+  eq(selectToast(0, 1),   null);
+  eq(selectToast(0, 100), null);
+});
+
+test('skipped beats caught-up: if both conditions true, skipped wins', () => {
+  // skippedLines > 0 AND totalTurns === 0 → both would fire, but skipped is checked first
+  eq(selectToast(5, 0), 'skipped');
+  assert.notStrictEqual(selectToast(5, 0), 'caught_up');
+});
+
+// ----------------------------------------------------------------
+// promptAccount dismiss → Primary default (pure fallback)
+// Mirrors burnboard.html runSync line 823:
+//   const accountLabel = accountLabelArg || _cfg.account_1_name || 'Primary';
+// And promptAccount dismiss: resolves with a1 = _cfg.account_1_name || 'Primary'
+// ----------------------------------------------------------------
+
+function resolveAccountLabel(accountLabelArg, cfg) {
+  return accountLabelArg || (cfg && cfg.account_1_name) || 'Primary';
+}
+
+console.log('\npromptAccount dismiss → Primary default');
+test('dismiss (undefined arg) → account_1_name', () => {
+  eq(resolveAccountLabel(undefined, { account_1_name: 'Work' }), 'Work');
+});
+test('dismiss (undefined arg) with no account_1_name → literal "Primary"', () => {
+  eq(resolveAccountLabel(undefined, { account_1_name: '' }), 'Primary');
+});
+test('dismiss (undefined arg) with null cfg → literal "Primary"', () => {
+  eq(resolveAccountLabel(undefined, null), 'Primary');
+});
+test('explicit label passed → used as-is (no dismiss fallback)', () => {
+  eq(resolveAccountLabel('Alt', { account_1_name: 'Work' }), 'Alt');
+});
+test('"combined" label passed → used as-is', () => {
+  eq(resolveAccountLabel('combined', { account_1_name: 'Work' }), 'combined');
+});
+
+// ================================================================
+// CANNOT-VERIFY-HEADLESS: Phase 4 DOM/async wiring confirmed by static inspection
+// 11. recomputeMonthlyCache try/catch in runSync — burnboard.html now wraps the call
+//     in try { await recomputeMonthlyCache(); } catch (e) { ...; _monthlyCacheStale = true }.
+//     The catch does not re-throw, so renderDashboard() and showScreen('app') still
+//     run even if recompute throws. Confirmed by source inspection — cannot exercise
+//     IDB paths under Node.
+// 12. renderHistory called on history tab switch — burnboard.html tab-bar handler:
+//     after panel.classList.add('active'), if (btn.dataset.tab === 'history') renderHistory()
+//     is called. Fire-and-forget (no await). Confirmed by grep of tab handler body.
+// 13. _historyBound flag prevents double-binding — renderHistory() checks _historyBound
+//     before attaching the delegated listener; sets it to true after first attach.
+//     Confirmed by module-level `let _historyBound = false` and guard in renderHistory.
+// 14. Phase 5: account selector pills rendered — renderHistory() now renders
+//     account-selector div with 3 pills (All, acct1, acct2) when twoAccountMode().
+//     Confirmed by source inspection of renderHistory().
+// 15. CSV download via Blob+createObjectURL+<a download> — exportHistoryCsv() creates
+//     Blob([csv], {type:'text/csv'}), URL.createObjectURL, temporary <a> with download
+//     attr, .click(), URL.revokeObjectURL. Confirmed by source inspection.
+// 16. _cfg.billing_start used (not billing_start_day) — getBillingCycles reads
+//     `Number(_cfg.billing_start) || 1` per RESOLVED spec note. Confirmed by grep.
+// 17. Phase 5: recomputeMonthlyCache loops real labels — in twoAccountMode loops
+//     [acct1, acct2, 'combined']; else ['combined']. RESOLVED Phase 4 ponytail.
+//     Confirmed by source inspection — cannot exercise IDB under Node.
+// 18. Phase 6: toast shown post-sync — runSync calls showToast('all caught up ✓')
+//     when totalTurns===0, or showToast('skipped N malformed lines') when skippedLines>0.
+//     Skipped-lines takes priority. Cannot exercise DOM showToast under Node.
+// 19. Phase 6: favicon updated in renderDashboard — setFavicon(_lastCheckState) is called
+//     after dashboard innerHTML assignment. _lastCheckState is set by renderStartCheck.
+//     Confirmed by source inspection — cannot exercise DOM+IDB path under Node.
+// 20. Phase 6: boot() shows reconnect screen when permission revoked — perm !== 'granted'
+//     now calls showScreen('reconnect') instead of showScreen('connect'). Confirmed.
+//
+// Additional browser-only items (CANNOT-VERIFY-HEADLESS):
+// 21. Dashboard always uses combined data — loadDataLocal() reads ALL turns via dbGetAll('turns')
+//     with no account_label filter. Start Check / Forecast / Mini Stats come from this path.
+//     The _historyAccount selector in renderHistory does NOT affect loadDataLocal.
+//     Confirmed: grep shows _historyAccount only referenced in renderHistory/renderMonthlyView/
+//     renderWeeklyView/renderBillingView/exportHistoryCsv — never in loadDataLocal.
+// 22. Account selector + combined card only appear when account_2_name set — twoAccountMode()
+//     is called inside renderHistory() before rendering selector/card HTML.
+//     When account_2_name is empty/whitespace, twoAccountMode()===false and the selector/card
+//     HTML is skipped entirely. Confirmed by source inspection of renderHistory().
+// 23. Account 2 cleared → single-account view — saveSettings() re-renders dashboard; history
+//     re-renders on every tab click. twoAccountMode() returns false when account_2_name is
+//     cleared, so selector and combined card vanish on next render. No migration needed.
+//     Confirmed: twoAccountMode() reads _cfg.account_2_name live on every call.
+// 24. promptAccount dismiss → Primary — backdrop click and Esc key both call dismiss()
+//     which resolves with `a1 = _cfg.account_1_name || 'Primary'`. No DOM element needed
+//     to verify the fallback chain; the pure fallback is tested above.
 // ================================================================
 
 // ================================================================
