@@ -1,49 +1,105 @@
-# Review — Phase 1: connect-and-core-dashboard
+# Reviewer Verdict — Phase 2: filtered-charts
 
-Reviewed: burnboard.html (1078 lines), burnboard.test.js (534 lines), against spec.md, changes.md, test-results.md, dump.md, and the project CLAUDE.md hard rules. Git diff vs base 278bfe7 adds only 4 files (burnboard.html, burnboard.test.js, .pipeline/spec.md, .pipeline/changes.md). No files touched outside the feature surface.
+Branch: ship/20260627-202600-phase-2-filtered-charts
+Base: f03c309e199c58867ba1f8537cb612732349c2b1 (Phase 1 merged)
+Files reviewed: burnboard.html, burnboard.test.js
+Diff: burnboard.html +463/-1, burnboard.test.js +402/-0. The single deletion is the
+intended renderDashboard wire-up line (replaced with the appended filter bar + charts shell).
+No Phase 1 function bodies appear in the diff.
 
-## Step 2 — Hard rules checklist
+---
+
+## Step 2 — Hard rules (pass/fail)
 
 ### Rule 1: "Never invent a state, field, name, or requirement not in spec docs"
 PASS.
-- Every Start Check state (good, caution_peak, caution_budget, danger, weekend, no_data) traces to dump.md 7.1 table (lines 314-319) and spec.md section 6.1.
-- All copy strings verified verbatim against dump.md: tagline, trust strip, steps, CTA, compat warning (5.2); sync phase strings + privacy note (5.4); all 6 Start Check headline/body pairs (dump 314-319); 3 mini-stat tooltips (dump 340-361, transcribed with dump's own capitalization); forecast sentences and disclaimer (dump 470-482).
-- IDB store names, keyPaths, indexes match dump 13.1 exactly (kv/turns/sessions/windows/monthly_cache; by_session/by_timestamp/by_month/by_account, etc.).
-- Turn/Session/Window record fields match dump 13.2/13.3/13.4.
-- Config field billing_start (burnboard.html lines 457/467/1008) — NOTE: dump 13.6 (line 937) names this billing_start_day, while dump 15.1 (line 1004) names it billing_start. dump.md is internally inconsistent; the coder picked the name dump uses in the dashboard data object. Not an invention (both names appear in dump). billing is not consumed by any Phase 1 computation, so behavior is unaffected. Flagged as a minor doc-consistency item, not a violation.
+- _filter = { range:'30d', model:'all' } — matches spec line 45 / dump 7.4 defaults. (html:816)
+- d fields built are EXACTLY daily_usage, heatmap, model_breakdown, top_projects, days_with_data
+  (html:910) — the four spec-pinned fields plus the day-count gate. No Phase-3 fields
+  (insights / recent_sessions / cost_by_model / summary) introduced.
+- Filter options are exactly 7d/30d/90d/all and all/opus/sonnet/haiku (html:918-919). No extras.
+- All visible copy traces to dump: daily burn rate, when you work, amber = peak hours,
+  model breakdown, top projects, no usage in this range, add more data to see your patterns,
+  filter labels range/model — all lowercase, verbatim (html:961,1040,1116,1174,963/1119/1177,1043,928/933).
+- The only ORIGINATED values (segment hexes, log-intensity formula) carry ponytail comments — Rule 2.
 
-### Rule 2: "Mark intentional simplifications with a ponytail: comment"
+### Rule 2: "Mark intentional simplifications with a ponytail: comment" (ceiling + upgrade path)
 PASS.
-- dedup guard: line 423-424 and 666-669 (delete-before-insert).
-- windows full recompute: line 681-683.
-- djb2 non-crypto hash: line 491.
-- today_vs_avg UTC choice: line 765.
-- tips button inert: line 246.
-- non-dashboard panels placeholder: line 253.
-- Phase 6 Reconnect fallback: line 1071-1072.
-All shortcuts that spec.md required a ponytail note for are present, several naming the upgrade path.
+- Log-intensity formula: ponytail at html:1076-1079 names ceiling (log base relative to range max)
+  AND upgrade path (quantile bucketing). Formula verbatim: Math.log(1+tokens)/Math.log(1+maxTok) (html:1081).
+- Doughnut hex tints: ponytail at html:1112-1113 names upgrade path (swap if brand palette defined).
+  Hexes match spec exactly: opus #A78BFA, sonnet #38BDF8, haiku #2DD4BF, unknown #4A4440 (html:1114).
+- CDN pin ponytail in spec; CDN tag added at html:11 (after fonts, before style) with if(window.Chart)
+  guard on every init. Rounded-pcts ponytail html:884-885. TZ short-name ponytail html:1028.
+  fmtTokens/font-family ponytail html:821.
 
-## Step 3 — Success metrics / acceptance
+Both hard rules PASS. No BLOCK on hard rules.
 
-- Single self-contained file, no build step, no new runtime deps: PASS (one HTML file; only external refs are Google Fonts via <link>, allowed by spec section "File").
-- Numbers render in JetBrains Mono: PASS. .mono / window-val / stat-value use JetBrains Mono; every interpolated number (window remaining, started Nm ago, weekly cap %, today-vs-avg x, opus/sonnet %, hours used, est. hours, days-until-reset, forecast remaining %) is wrapped in class="mono" or a mono element.
-- Copy verbatim / lowercase: PASS (verified above).
-- Re-sync dedup decision implemented as resolved in spec: PASS. dbDeleteTurnsBySession walks the by_session index cursor and deletes each entry in a single readwrite tx (line 425-437); the sync loop deletes-then-batch-inserts per touched session (line 671-676); sessions use put overwrite via keyPath; windows are fully recomputed from all stored turns each sync and put (deterministic window_id) (line 681-686).
-- Boot reconnect from saved handle: PASS (boot() queries permission; granted -> runSync; else -> Connect fallback with ponytail note).
-- Scope guard: PASS. No charts/heatmap/insights/filter bar/sessions table/history/tips/what's-coming/two-account/reconnect screen/recomputeMonthlyCache/getWeeklyBuckets/toasts/favicon/pricing constants. The non-dashboard tab panels are empty placeholders; the tips button is inert. Grep for forbidden terms returns only Array.filter usages and the ponytail comment naming the deferred Reconnect.
+---
+
+## Step 3 — Acceptance criteria (from ROADMAP/spec)
+
+AC#1 (critical) — filter changes leave Start Check / Mini Stats / Forecast untouched: PASS.
+  Delegated handler (html:1437-1447) updates _filter, toggles .sel within the clicked group only,
+  and calls await renderFilteredSections() ONLY. The string renderDashboard does not appear in the
+  handler. renderFilteredSections (html:948-954) calls only the four Phase-2 renderers. Start Check /
+  Mini Stats / Forecast are never re-invoked on filter change.
+
+AC#2 — daily burn bars per day, today highlighted, empty state: PASS.
+  Bars #F97316, today bar #FB923C (html:974), tooltip title appends today (html:991), empty state
+  shows exact copy no usage in this range and does NOT init a chart (html:962-966).
+
+AC#3 — heatmap 7x24, intensity color, weekday peak tint, local-TZ note, under-3-days gate: PASS.
+  Gate fires first when days_with_data < 3 with exact copy (html:1042-1046). Grid 7 rows (Mon-Sun) x
+  24 cols. rowIndex->dow mapping dow=(rowIndex+1)%7 (html:1069) is the correct inverse of spec's
+  rowIndex=(dow+6)%7: rowIndex0->dow1 (Mon), rowIndex6->dow0 (Sun) — verified. Peak tint on weekday
+  rows 0-4, hours 13-18, layered over amber (html:1091-1097). Local-TZ note via Intl.DateTimeFormat
+  from _cfg.timezone, lowercased, not hard-coded IST (html:1024-1038,1103).
+
+AC#4 — doughnut opus/sonnet/haiku/unknown + center total + legend; top projects up to 8: PASS.
+  Order opus,sonnet,haiku,unknown; 0-token families excluded (html:886-892). Center total mono
+  overlay (html:1128). Custom legend, built-in legend disabled (html:1131-1138,1157). top_projects
+  sorted desc, sliced to 8 (html:903-906).
+
+AC#5 — all four respect active filter: PASS. All four read from the single loadFilteredData(fd).
+
+---
 
 ## Step 4 — Code quality
 
-- State machine ordering (no_data -> weekend -> peak/off-peak) matches spec 6.1 and is mirrored in both the inline self-check and burnboard.test.js. Strict > boundaries (80/85, 70/75) implemented correctly and boundary-tested.
-- Peak hours = weekday UTC hour 13-18 inclusive (19:00 off-peak). This matches spec.md's resolution of the dump.md inconsistency (dump line 309 says 13-19, line 508 says 13-18). Implementation follows the spec decision; off-peak [local time] correctly computed as 19:00 UTC.
-- Current-window selection: filter (now - start) < WIN_MS, sort desc by window_start, take first — matches spec 15.3.
-- Weekly cap, today_vs_avg (denominator fixed 30), forecast projection with fracElapsed clamp(0.01,1) — all match spec formulas and are unit-tested.
-- Tests are meaningful, not happy-path-only: they cover the risky paths the coder flagged — the dedup double-count (proves the guard is load-bearing), window gap boundary at exactly 5h vs 5h+1s, cross-session windows, state-machine strict boundaries, fracElapsed clamp preventing Infinity, and dominant-model-by-volume. 82 assertions, structured around the documented risks.
-- One acknowledged limitation (not a blocker, single-user scope): incremental dedup keys on session_id and assumes one .jsonl per session (true for Claude Code). The dbDeleteTurnsBySession cursor is browser-only and could not run under Node; the tester proved the computation side instead, which is a reasonable substitute given the constraint.
+Scope guard: PASS. Scanned additions for every banned later-phase feature (insights, sessions table,
+cost/summary, history/monthly_cache/billing/export, two-account, tips, what's-coming, reconnect,
+toasts/favicon). None present.
 
-No security, correctness, or data-integrity issues found. The dedup guard correctly prevents the token double-counting that was the primary data-integrity risk.
+Chart.js CDN + guards: PASS. CDN tag html:11. Every Chart init guarded by if(window.Chart)
+(html:967,1122,1180). A CDN miss leaves the Phase-1 dashboard intact; canvases simply stay blank.
 
-## Minor (non-blocking) follow-ups
-- dump.md 13.6 vs 15.1 disagree on billing_start_day vs billing_start. Implementation uses billing_start. Harmless in Phase 1 (unused), but reconcile before Phase 3/8 builds the billing cycle view so the persisted key matches whatever that phase reads.
+Destroy-before-recreate: PASS. _dailyChart/_modelChart/_projChart each .destroy()'d and nulled
+before new Chart(...) (html:969,1140,1182). No canvas-reuse leak on re-filter.
+
+Surgical changes: PASS. Only existing-code edit is the renderDashboard wire-up (html:1243-1246).
+loadDataLocal / renderStartCheck / renderMiniStats / renderForecast / modelFamily / dbGetAll /
+IDB layer untouched — confirmed by diff (no Phase-1 function signatures in the diff).
+
+Numbers in JetBrains Mono: PASS. Canvas ticks/tooltips set font.family 'JetBrains Mono'; HTML legend
+values and doughnut center wrapped in .mono (html:1128,1135).
+
+Tests meaningful: PASS. The 23 new assertions hit the risky paths the Coder flagged — range cutoffs
+at exact boundaries (8/2, 31/29, 91/89 days), model filter incl. haiku, session dedup, asc/desc
+sorts, 8-slice boundary, days_with_data gate (2/3/filter-reduced), empty-set division-by-zero,
+single-family 100%. Not happy-path-only.
+
+Dead/irrelevant code: none found. Implementation is tight.
+
+Notes (non-blocking):
+- burnboard.test.js re-implements loadFilteredData as a pure computeFilteredData mirror (html:828 vs
+  test:538) because IDB cannot run in Node. Confirmed the two are logic-identical line-for-line. This
+  is the established Phase-1 pattern; carries the usual drift risk if loadFilteredData later changes.
+- .filter-label uses font-weight:700/letter-spacing for a section-label look; spec said muted
+  (color:var(--mu) satisfies that). Minor styling, within convention, not a divergence.
+- Could not execute node burnboard.test.js (reviewer Bash is read-only). Relying on the Tester's
+  reported 123/123 plus a full static read of every new assertion.
+
+---
 
 VERDICT: SHIP

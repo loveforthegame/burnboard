@@ -28,3 +28,25 @@ note: hard rules pass, scope guard honored, dedup correct. minor: dump inconsist
 ## 2026-06-27 20:20 — product-qa · feature: phase-1-connect-and-core-dashboard
 status: QA PASS
 note: all 8 ROADMAP acceptance criteria verified, 82/82 tests pass, no defects. dedup guard + state machine confirmed.
+
+## 2026-06-27 20:26 — RUN START · feature: phase-2-filtered-charts
+request: /ship phase 2
+branch: ship/20260627-202600-phase-2-filtered-charts
+base: (phase 1 merged to master)
+
+## 2026-06-27 20:31 — planner · feature: phase-2-filtered-charts
+status: spec written (no open questions)
+note: filter bar + 4 charts. Mechanism: separate loadFilteredData/renderFilteredSections, never touches phase 1 Start Check/MiniStats/Forecast. Chart.js v4 via CDN, guarded by if(window.Chart).
+
+## 2026-06-27 20:36 — coder · feature: phase-2-filtered-charts
+status: implemented
+files: burnboard.html (phase 2 additions), burnboard.test.js (+18 = 100 total)
+note: riskiest = filter click handler must call only renderFilteredSections (never renderDashboard); watch "Canvas already in use" on repeat filter; heatmap row->dow mapping (Mon=row0,dow=1).
+
+## 2026-06-27 20:41 — tester · feature: phase-2-filtered-charts
+status: tests passed
+note: 123/123 pass (+23 phase 2). AC#1 wiring confirmed (handler calls only renderFilteredSections); chart .destroy() before recreate; heatmap rowIndex->dow mapping verified.
+
+## 2026-06-27 20:45 — reviewer · feature: phase-2-filtered-charts
+status: VERDICT: SHIP
+note: hard rules pass, AC#1 holds (filter handler calls only renderFilteredSections), diff surgical +463/-1, scope guard honored, charts guarded+destroyed. non-blocking: test mirrors loadFilteredData as computeFilteredData (drift risk).
