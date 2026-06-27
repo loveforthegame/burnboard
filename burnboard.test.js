@@ -928,6 +928,738 @@ test('model=haiku: keeps only haiku turns', () => {
 // 3. Heatmap rowIndex→dow lookup: line 1069 uses `const dow = (rowIndex + 1) % 7`
 //    which correctly maps Mon(rowIndex=0)→dow=1 ... Sun(rowIndex=6)→dow=0.
 //    The lookup at line 1075 uses `lookup[\`${dow}-${h}\`]` matching heatmap key `${dow}-${hr}`.
+// CANNOT-VERIFY-HEADLESS: Phase 3 browser-only items confirmed by source inspection:
+// 4. copyText 1500ms revert — navigator.clipboard.writeText + setTimeout(1500) in burnboard.html.
+// 5. One-row-open-at-a-time — _openSession module var compared in the delegated handler.
+// 6. Insights on unfiltered path — computeInsights called inside loadDataLocal (not loadFilteredData).
+//    Sessions+Cost on filtered path — renderSessions/renderCostSummary called only from renderFilteredSections.
+
+// ================================================================
+// Phase 3 — pure compute functions (extracted verbatim from burnboard.html)
+// ================================================================
+
+const PRICING = {
+  opus:   { input: 15.00, output: 75.00 },
+  sonnet: { input:  3.00, output: 15.00 },
+  haiku:  { input:  0.25, output:  1.25 },
+};
+
+function fmtSessionDur(ms) {
+  if (ms < 60000) return '< 1 min';
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), rm = m % 60;
+  return `${h}h ${rm}m`;
+}
+
+function relWhen(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 48) return 'yesterday';
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso));
+}
+
+// Minimal _cfg stub for computeInsights (localPeakRange uses it)
+const _cfg = { timezone: 'UTC' };
+
+function localPeakRange(tz) {
+  const refStart = new Date('2026-01-05T13:00:00Z');
+  const refEnd   = new Date('2026-01-05T19:00:00Z');
+  const fmt = new Intl.DateTimeFormat(undefined, { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+  return `${fmt.format(refStart).toLowerCase()} – ${fmt.format(refEnd).toLowerCase()}`;
+}
+
+function computeInsights(allTurns, now) {
+  const DAY_MS = 86400000;
+  const last7  = now - 7  * DAY_MS;
+  const prev7s = now - 14 * DAY_MS;
+  const fired  = [];
+
+  const sessMap = {};
+  for (const t of allTurns) {
+    if (!sessMap[t.session_id]) sessMap[t.session_id] = [];
+    sessMap[t.session_id].push(t);
+  }
+
+  // Trigger 1 — Session Spiral
+  let spiralCount = 0;
+  for (const turns of Object.values(sessMap)) {
+    const inWindow = turns.some(t => new Date(t.timestamp).getTime() >= last7);
+    if (!inWindow) continue;
+    if (turns.length <= 5) continue;
+    const sorted = [...turns].sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+    const toks = sorted.map(t => t.input_tokens + t.output_tokens);
+    const early = toks.slice(0, 3);
+    const late  = toks.slice(2);
+    const avgEarly = early.reduce((s,v) => s+v, 0) / early.length;
+    if (avgEarly <= 0) continue;
+    const avgLate = late.reduce((s,v) => s+v, 0) / late.length;
+    if (avgLate / avgEarly > 3.0) spiralCount++;
+  }
+  if (spiralCount >= 3) {
+    fired.push({ type:'spiral', severity:'warning',
+      title:'your sessions get expensive fast',
+      body:`${spiralCount} recent sessions had 3x cost growth`,
+      copy_text:'Run /compact every 30–45 minutes in long sessions, or use /clear when switching to a new task.' });
+  }
+
+  // Trigger 2 — Cache Alert
+  let cacheReadNow=0, inputNow=0, totalTokNow=0, cacheReadPrev=0, inputPrev=0;
+  for (const t of allTurns) {
+    const ts = new Date(t.timestamp).getTime();
+    if (ts >= last7) {
+      cacheReadNow += t.cache_read_tokens; inputNow += t.input_tokens;
+      totalTokNow  += t.input_tokens + t.output_tokens;
+    } else if (ts >= prev7s) {
+      cacheReadPrev += t.cache_read_tokens; inputPrev += t.input_tokens;
+    }
+  }
+  const denomNow  = cacheReadNow  + inputNow;
+  const denomPrev = cacheReadPrev + inputPrev;
+  const rateNow  = denomNow  > 0 ? cacheReadNow  / denomNow  : 0;
+  const ratePrev = denomPrev > 0 ? cacheReadPrev / denomPrev : 0;
+  if (rateNow < 0.10 && ratePrev > 0.25 && totalTokNow > 50000) {
+    fired.push({ type:'cache', severity:'danger',
+      title:'something looks wrong with your cache',
+      body:`cache hit rate dropped from ${Math.round(ratePrev*100)}% to ${Math.round(rateNow*100)}%`,
+      copy_text:'Run: claude --version\nIf above 2.1.34, run: npm update -g @anthropic-ai/claude-code' });
+  } else if (rateNow < 0.15 && totalTokNow > 100000) {
+    fired.push({ type:'cache', severity:'warning',
+      title:'your cache efficiency is low',
+      body:`only ${Math.round(rateNow*100)}% of input tokens are coming from cache`,
+      copy_text:'Put stable rules at the top of CLAUDE.md (these get cached).\nPut session-specific notes at the bottom.' });
+  }
+
+  // Trigger 3 — Peak Hour Penalty
+  let peakTok=0, totalTok7=0;
+  for (const t of allTurns) {
+    if (new Date(t.timestamp).getTime() < last7) continue;
+    const tok = t.input_tokens + t.output_tokens;
+    totalTok7 += tok;
+    if (t.is_peak_hour === 1) peakTok += tok;
+  }
+  const peakPct = totalTok7 > 0 ? peakTok / totalTok7 : 0;
+  if (peakPct > 0.50) {
+    fired.push({ type:'peak', severity:'info',
+      title:'half your usage is during peak hours',
+      body:`${Math.round(peakPct*100)}% of use happened during peak hours`,
+      copy_text:'Peak hours: weekdays 5–11am PT (13:00–19:00 UTC).\nFor big sessions, start before 5am PT or after 11am PT.' });
+  }
+
+  // Trigger 4 — Opus Waste
+  let opusWasteCount = 0;
+  for (const [, turns] of Object.entries(sessMap)) {
+    const inWindow = turns.some(t => new Date(t.timestamp).getTime() >= last7);
+    if (!inWindow) continue;
+    if (turns.length >= 4) continue;
+    const vol = { opus:0, sonnet:0, haiku:0, other:0 };
+    for (const t of turns) vol[modelFamily(t.model)] += t.input_tokens + t.output_tokens;
+    const dominant = Object.entries(vol).sort((a,b) => b[1]-a[1])[0][0];
+    if (dominant === 'opus') opusWasteCount++;
+  }
+  if (opusWasteCount >= 5) {
+    fired.push({ type:'opus_waste', severity:'info',
+      title:'using opus for quick questions',
+      body:`you have ${opusWasteCount} sessions with under 4 turns using opus`,
+      copy_text:'Add to CLAUDE.md:\nUse Haiku for: quick edits, formatting, simple Q&A.\nUse Sonnet for: new code, refactors, multi-step tasks.\nUse Opus only when I explicitly ask.' });
+  }
+
+  const PRIO = { danger:0, warning:1, info:2 };
+  fired.sort((a,b) => PRIO[a.severity] - PRIO[b.severity]);
+  return fired.slice(0, 3);
+}
+
+// Helpers for filtered data compute (phase 3 additions)
+function computeFilteredDataP3(turns) {
+  // Builds recent_sessions, turns_by_session, cost_by_model, summary from a turn array
+  const allSessions = buildSessions(turns);
+  const recent_sessions = allSessions
+    .sort((a,b) => b.last_timestamp > a.last_timestamp ? 1 : -1)
+    .slice(0, 20);
+
+  const top20sids = new Set(recent_sessions.map(s => s.session_id));
+  const turns_by_session = {};
+  for (const t of turns) {
+    if (!top20sids.has(t.session_id)) continue;
+    if (!turns_by_session[t.session_id]) turns_by_session[t.session_id] = [];
+    turns_by_session[t.session_id].push({
+      timestamp: t.timestamp, input_tokens: t.input_tokens,
+      output_tokens: t.output_tokens, cache_read_tokens: t.cache_read_tokens,
+      tool_name: t.tool_name,
+    });
+  }
+  for (const sid of Object.keys(turns_by_session)) {
+    turns_by_session[sid].sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+  }
+
+  const famInput  = { opus:0, sonnet:0, haiku:0, other:0 };
+  const famOutput = { opus:0, sonnet:0, haiku:0, other:0 };
+  for (const t of turns) {
+    const fam = modelFamily(t.model);
+    famInput[fam]  += t.input_tokens;
+    famOutput[fam] += t.output_tokens;
+  }
+  const cost_by_model = ['opus','sonnet','haiku'].map(fam => {
+    const inp = famInput[fam], out = famOutput[fam];
+    if (inp + out === 0) return null;
+    return { model: fam, total_tokens: inp+out,
+             estimated_cost_usd: (inp/1e6)*PRICING[fam].input + (out/1e6)*PRICING[fam].output };
+  }).filter(Boolean);
+  const otherTok = famInput.other + famOutput.other;
+  if (otherTok > 0) cost_by_model.push({ model:'unknown', total_tokens:otherTok, estimated_cost_usd:0 });
+
+  const sidSet = new Set(turns.map(t => t.session_id));
+  const total_api_cost_usd = cost_by_model.reduce((s,m) => s + m.estimated_cost_usd, 0);
+  const summary = {
+    total_sessions:   sidSet.size,
+    total_turns:      turns.length,
+    total_input:      turns.reduce((s,t) => s + t.input_tokens, 0),
+    total_output:     turns.reduce((s,t) => s + t.output_tokens, 0),
+    total_cache_read: turns.reduce((s,t) => s + t.cache_read_tokens, 0),
+    total_api_cost_usd,
+  };
+  return { recent_sessions, turns_by_session, cost_by_model, summary, total_api_cost_usd };
+}
+
+// ================================================================
+// Phase 3 — fmtSessionDur
+// ================================================================
+console.log('\nfmtSessionDur');
+test('< 60s → "< 1 min"',         () => eq(fmtSessionDur(0),       '< 1 min'));
+test('59999ms → "< 1 min"',       () => eq(fmtSessionDur(59999),   '< 1 min'));
+test('60000ms → "1 min"',         () => eq(fmtSessionDur(60000),   '1 min'));
+test('30 min',                    () => eq(fmtSessionDur(30*60000), '30 min'));
+test('59 min',                    () => eq(fmtSessionDur(59*60000), '59 min'));
+test('60 min → "1h 0m"',          () => eq(fmtSessionDur(3600000),  '1h 0m'));
+test('90 min → "1h 30m"',         () => eq(fmtSessionDur(90*60000), '1h 30m'));
+test('125 min → "2h 5m"',         () => eq(fmtSessionDur(125*60000),'2h 5m'));
+
+// ================================================================
+// Phase 3 — relWhen
+// ================================================================
+console.log('\nrelWhen');
+test('empty → ""',  () => eq(relWhen(''), ''));
+test('null → ""',   () => eq(relWhen(null), ''));
+// Boundary tests using fixed timestamps (offset from now)
+test('30m ago → "30m ago"', () => {
+  const iso = new Date(Date.now() - 30*60000).toISOString();
+  assert.ok(relWhen(iso).endsWith('m ago'), `got: ${relWhen(iso)}`);
+});
+test('5h ago → "5h ago"', () => {
+  const iso = new Date(Date.now() - 5*3600000).toISOString();
+  assert.ok(relWhen(iso).endsWith('h ago'), `got: ${relWhen(iso)}`);
+});
+test('23h ago → ends "h ago" not yesterday', () => {
+  const iso = new Date(Date.now() - 23*3600000).toISOString();
+  assert.ok(relWhen(iso).endsWith('h ago'), `got: ${relWhen(iso)}`);
+});
+test('25h ago → "yesterday"', () => {
+  const iso = new Date(Date.now() - 25*3600000).toISOString();
+  eq(relWhen(iso), 'yesterday');
+});
+test('3 days ago → MMM D format', () => {
+  const iso = new Date(Date.now() - 3*86400000).toISOString();
+  // Should not be "yesterday" or end "h ago"
+  const r = relWhen(iso);
+  assert.ok(!r.endsWith('h ago') && r !== 'yesterday', `got: ${r}`);
+});
+
+// ================================================================
+// Phase 3 — computeInsights: Session Spiral
+// ================================================================
+console.log('\ncomputeInsights — Spiral');
+
+// Helper to build N sessions each with 6 turns having a high ratio
+function spiralSessions(count, now) {
+  const turns = [];
+  for (let i = 0; i < count; i++) {
+    const sid = `spiral-sess-${i}`;
+    // Turn 1-3: 100 tokens each; turns 3-6: 500 tokens each → late avg = 400, early avg = 100, ratio=4
+    for (let j = 0; j < 6; j++) {
+      const ts = new Date(now - 3*86400000 + j*60000).toISOString();
+      const tok = j < 3 ? 100 : 500;
+      turns.push(turn({ session_id: sid, timestamp: ts, input_tokens: tok, output_tokens: 0, cache_read_tokens: 0 }));
+    }
+  }
+  return turns;
+}
+
+test('spiral: fires at 3 qualifying sessions', () => {
+  const now = Date.now();
+  const t = spiralSessions(3, now);
+  const ins = computeInsights(t, now);
+  assert.ok(ins.some(i => i.type === 'spiral'), 'spiral should fire');
+});
+test('spiral: silent at 2 qualifying sessions', () => {
+  const now = Date.now();
+  const t = spiralSessions(2, now);
+  const ins = computeInsights(t, now);
+  assert.ok(!ins.some(i => i.type === 'spiral'), 'spiral should not fire at 2');
+});
+test('spiral: silent when sessions have exactly 5 turns (<=5 → skip)', () => {
+  const now = Date.now();
+  const turns = [];
+  for (let i = 0; i < 3; i++) {
+    const sid = `sess-5t-${i}`;
+    for (let j = 0; j < 5; j++) {
+      const ts = new Date(now - 3*86400000 + j*60000).toISOString();
+      const tok = j < 3 ? 100 : 500;
+      turns.push(turn({ session_id: sid, timestamp: ts, input_tokens: tok, output_tokens: 0, cache_read_tokens: 0 }));
+    }
+  }
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'spiral'), 'spiral: 5-turn sessions should not qualify');
+});
+test('spiral: ratio exactly 3.0 does NOT fire (strict >)', () => {
+  const now = Date.now();
+  const turns = [];
+  for (let i = 0; i < 3; i++) {
+    const sid = `sess-ratio3-${i}`;
+    // early avg = 100, late avg = 300 (including turn[2]=100) → ratio = 300/100 = 3.0 (not > 3)
+    // turns[0,1,2] = 100; turns[2,3,4,5] = late. avg of [100,100,100,100] = 100. ratio=1. need to be precise.
+    // Build: turns 0,1,2 = 100; turns 3,4,5 = 200. early=[100,100,100] avg=100; late=[100,200,200,200] avg=175. ratio=1.75
+    // To get exactly 3.0: early=[100,100,100]=100 avg; late=[turn2=100, turn3=100, turn4=100, turn5=220] = avg=130. Not 3.0.
+    // Precise: early = [t0,t1,t2] avg = E; late = [t2,t3,t4,t5] avg = L; L/E = 3.0 exactly.
+    // E = (a+b+c)/3; L = (c+d+e+f)/4; 4L = 3E → c+d+e+f = (3/4)(a+b+c).
+    // Simple: a=b=c=100 → E=100; need L=300: c+d+e+f=1200 → d+e+f=1100. Use d=e=f=366+1/3 (not integer).
+    // Use a=b=c=300, d=e=f=0 → E=300; L=(300+0+0+0)/4=75. ratio=0.25. No.
+    // Simpler: a=0,b=0,c=300 → early avg=100; late=[300,d,e,f]; want late avg=300 → d+e+f=900 → d=e=f=300.
+    // ratio = 300/100 = 3.0 EXACTLY. Verify: toks=[0,0,300,300,300,300]; early=[0,0,300] avg=100; late=[300,300,300,300] avg=300.
+    const tokPattern = [0, 0, 300, 300, 300, 300];
+    for (let j = 0; j < 6; j++) {
+      const ts = new Date(now - 3*86400000 + j*60000).toISOString();
+      turns.push(turn({ session_id: sid, timestamp: ts, input_tokens: tokPattern[j], output_tokens: 0, cache_read_tokens: 0 }));
+    }
+  }
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'spiral'), 'spiral: ratio=3.0 exactly should NOT fire');
+});
+test('spiral: avgEarly=0 session skipped (no divide)', () => {
+  const now = Date.now();
+  // 3 sessions where first 3 turns all have 0 tokens (avgEarly=0) → should not throw, not fire
+  const turns = [];
+  for (let i = 0; i < 3; i++) {
+    const sid = `sess-zero-${i}`;
+    for (let j = 0; j < 6; j++) {
+      const ts = new Date(now - 3*86400000 + j*60000).toISOString();
+      // All turns 0 tokens → avgEarly=0, session skipped
+      turns.push(turn({ session_id: sid, timestamp: ts, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 }));
+    }
+  }
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'spiral'), 'avgEarly=0: session skipped, no spiral');
+});
+
+// ================================================================
+// Phase 3 — computeInsights: Cache Alert
+// ================================================================
+console.log('\ncomputeInsights — Cache Alert');
+
+function makeCacheTurns({ rateNow, ratePrev, weekTotal }, now) {
+  // Build minimal turns to achieve given rates
+  const turns = [];
+  // This-week turns: rateNow = cache/(cache+input); totalTok=weekTotal
+  const inputNow = Math.floor(weekTotal / 2);
+  const outputNow = weekTotal - inputNow;
+  // cache_read = rateNow * (cache_read + input) → solve: cache = rateNow*input/(1-rateNow)
+  const cacheReadNow = rateNow > 0 ? Math.round(rateNow * inputNow / (1 - rateNow)) : 0;
+  turns.push(turn({
+    session_id: 'now-s',
+    timestamp: new Date(now - 3*86400000).toISOString(),
+    input_tokens: inputNow, output_tokens: outputNow,
+    cache_read_tokens: cacheReadNow, is_peak_hour: 0,
+  }));
+  // Prev-week turns
+  if (ratePrev !== undefined) {
+    const inputPrev = 50000;
+    const cacheReadPrev = ratePrev > 0 ? Math.round(ratePrev * inputPrev / (1 - ratePrev)) : 0;
+    turns.push(turn({
+      session_id: 'prev-s',
+      timestamp: new Date(now - 10*86400000).toISOString(),
+      input_tokens: inputPrev, output_tokens: 0,
+      cache_read_tokens: cacheReadPrev, is_peak_hour: 0,
+    }));
+  }
+  return turns;
+}
+
+test('cache DANGER fires: rateNow<10%, ratePrev>25%, weekTotal>50k', () => {
+  const now = Date.now();
+  // rateNow=0.05 (5%), ratePrev=0.30 (30%), weekTotal=100000
+  const turns = makeCacheTurns({ rateNow:0.05, ratePrev:0.30, weekTotal:100000 }, now);
+  const ins = computeInsights(turns, now);
+  assert.ok(ins.some(i => i.type === 'cache' && i.severity === 'danger'), 'cache DANGER should fire');
+});
+test('cache DANGER silent if rateNow >= 10%', () => {
+  const now = Date.now();
+  const turns = makeCacheTurns({ rateNow:0.10, ratePrev:0.30, weekTotal:100000 }, now);
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'cache' && i.severity === 'danger'), 'cache DANGER: rateNow=10% should NOT fire (strict <)');
+});
+test('cache DANGER silent if ratePrev <= 25%', () => {
+  const now = Date.now();
+  // Exact: ratePrev = 25/100 = 0.25. cache/(cache+input) = 0.25 → cache=input/3.
+  // Use input=75000, cache=25000 → rate=25000/100000=0.25. rateNow=0.05, weekTotal>50k.
+  const turns = [
+    turn({ session_id:'now-s', timestamp: new Date(now-3*86400000).toISOString(),
+      input_tokens:50000, output_tokens:50000, cache_read_tokens:2632, is_peak_hour:0 }),
+    // prev: cache=25000, input=75000 → rate=25000/100000=0.25 exactly
+    turn({ session_id:'prev-s', timestamp: new Date(now-10*86400000).toISOString(),
+      input_tokens:75000, output_tokens:0, cache_read_tokens:25000, is_peak_hour:0 }),
+  ];
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'cache' && i.severity === 'danger'), 'cache DANGER: ratePrev=25% should NOT fire (strict >)');
+});
+test('cache DANGER silent if weekTotal <= 50k', () => {
+  const now = Date.now();
+  const turns = makeCacheTurns({ rateNow:0.05, ratePrev:0.30, weekTotal:50000 }, now);
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'cache' && i.severity === 'danger'), 'cache DANGER: weekTotal=50000 should NOT fire (strict >)');
+});
+test('cache WARNING fires: rateNow<15%, weekTotal>100k (no DANGER)', () => {
+  const now = Date.now();
+  // rateNow=0.10 (>=10% so no DANGER), weekTotal=150000
+  const turns = makeCacheTurns({ rateNow:0.10, ratePrev:0.10, weekTotal:150000 }, now);
+  const ins = computeInsights(turns, now);
+  assert.ok(ins.some(i => i.type === 'cache' && i.severity === 'warning'), 'cache WARNING should fire');
+});
+test('cache WARNING silent at rateNow >= 15%', () => {
+  const now = Date.now();
+  // Exact rateNow=0.15: cache/(cache+input)=0.15 → cache=0.15*input/(1-0.15)=0.15*input/0.85
+  // input=85000, cache=15000 → 15000/100000=0.15 exactly. output=50000 → total=135000>100k.
+  // ratePrev doesn't matter (< 0.25, no DANGER); rateNow=0.15 → WARNING should NOT fire.
+  const turns = [
+    turn({ session_id:'now-s', timestamp: new Date(now-3*86400000).toISOString(),
+      input_tokens:85000, output_tokens:50000, cache_read_tokens:15000, is_peak_hour:0 }),
+    turn({ session_id:'prev-s', timestamp: new Date(now-10*86400000).toISOString(),
+      input_tokens:10000, output_tokens:0, cache_read_tokens:1000, is_peak_hour:0 }),
+  ];
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'cache'), 'cache WARNING: rateNow=15% should NOT fire');
+});
+test('cache WARNING silent at weekTotal <= 100k', () => {
+  const now = Date.now();
+  const turns = makeCacheTurns({ rateNow:0.10, ratePrev:0.10, weekTotal:100000 }, now);
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'cache'), 'cache WARNING: weekTotal=100000 should NOT fire');
+});
+test('cache DANGER suppresses WARNING (one card max)', () => {
+  const now = Date.now();
+  // Conditions for DANGER: rateNow<10%, ratePrev>25%, weekTotal>50k → also satisfies WARNING (rateNow<15%)
+  const turns = makeCacheTurns({ rateNow:0.05, ratePrev:0.30, weekTotal:100000 }, now);
+  const ins = computeInsights(turns, now);
+  const cacheIns = ins.filter(i => i.type === 'cache');
+  eq(cacheIns.length, 1);
+  eq(cacheIns[0].severity, 'danger');
+});
+
+// ================================================================
+// Phase 3 — computeInsights: Peak Hour Penalty
+// ================================================================
+console.log('\ncomputeInsights — Peak Penalty');
+
+test('peak fires when peak_pct > 0.50', () => {
+  const now = Date.now();
+  const ts = new Date(now - 3*86400000).toISOString();
+  // 60% peak, 40% off-peak
+  const turns = [
+    turn({ session_id:'p1', timestamp:ts, input_tokens:600, output_tokens:0, cache_read_tokens:0, is_peak_hour:1 }),
+    turn({ session_id:'p2', timestamp:ts, input_tokens:400, output_tokens:0, cache_read_tokens:0, is_peak_hour:0 }),
+  ];
+  const ins = computeInsights(turns, now);
+  assert.ok(ins.some(i => i.type === 'peak'), 'peak should fire');
+});
+test('peak silent at exactly 0.50 (strict >)', () => {
+  const now = Date.now();
+  const ts = new Date(now - 3*86400000).toISOString();
+  const turns = [
+    turn({ session_id:'p1', timestamp:ts, input_tokens:500, output_tokens:0, cache_read_tokens:0, is_peak_hour:1 }),
+    turn({ session_id:'p2', timestamp:ts, input_tokens:500, output_tokens:0, cache_read_tokens:0, is_peak_hour:0 }),
+  ];
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'peak'), 'peak: exactly 0.50 should NOT fire');
+});
+test('peak uses is_peak_hour field', () => {
+  const now = Date.now();
+  const ts = new Date(now - 3*86400000).toISOString();
+  // All tokens are peak-hour
+  const turns = [turn({ session_id:'p1', timestamp:ts, input_tokens:1000, output_tokens:0, cache_read_tokens:0, is_peak_hour:1 })];
+  const ins = computeInsights(turns, now);
+  assert.ok(ins.some(i => i.type === 'peak'), 'all peak tokens should fire');
+});
+
+// ================================================================
+// Phase 3 — computeInsights: Opus Waste
+// ================================================================
+console.log('\ncomputeInsights — Opus Waste');
+
+function makeOpusSessions(count, now, turnCount=2) {
+  const turns = [];
+  for (let i = 0; i < count; i++) {
+    const sid = `opus-${i}`;
+    for (let j = 0; j < turnCount; j++) {
+      turns.push(turn({
+        session_id: sid, model: 'claude-opus-4-5',
+        timestamp: new Date(now - 3*86400000 + j*60000).toISOString(),
+        input_tokens: 500, output_tokens: 0, cache_read_tokens: 0, is_peak_hour: 0,
+      }));
+    }
+  }
+  return turns;
+}
+
+test('opus_waste fires at 5 qualifying sessions', () => {
+  const now = Date.now();
+  const ins = computeInsights(makeOpusSessions(5, now, 2), now);
+  assert.ok(ins.some(i => i.type === 'opus_waste'), 'opus_waste should fire at 5');
+});
+test('opus_waste silent at 4 qualifying sessions', () => {
+  const now = Date.now();
+  const ins = computeInsights(makeOpusSessions(4, now, 2), now);
+  assert.ok(!ins.some(i => i.type === 'opus_waste'), 'opus_waste: 4 sessions should not fire');
+});
+test('opus_waste: 3 turns qualifies (< 4 strict)', () => {
+  const now = Date.now();
+  const ins = computeInsights(makeOpusSessions(5, now, 3), now);
+  assert.ok(ins.some(i => i.type === 'opus_waste'), 'opus_waste: 3 turns should qualify');
+});
+test('opus_waste: 4 turns does NOT qualify', () => {
+  const now = Date.now();
+  const ins = computeInsights(makeOpusSessions(5, now, 4), now);
+  assert.ok(!ins.some(i => i.type === 'opus_waste'), 'opus_waste: 4 turns should NOT qualify (strict <4)');
+});
+test('opus_waste: sonnet sessions excluded', () => {
+  const now = Date.now();
+  const turns = [];
+  for (let i = 0; i < 5; i++) {
+    turns.push(turn({
+      session_id: `sonnet-${i}`, model: 'claude-sonnet-3-7',
+      timestamp: new Date(now - 3*86400000).toISOString(),
+      input_tokens: 500, output_tokens: 0, cache_read_tokens: 0, is_peak_hour: 0,
+    }));
+  }
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'opus_waste'), 'sonnet sessions should not trigger opus_waste');
+});
+
+// ================================================================
+// Phase 3 — computeInsights: Priority / max-3
+// ================================================================
+console.log('\ncomputeInsights — priority + max-3');
+
+test('empty turns → no insights (green fallback is render-time)', () => {
+  eq(computeInsights([], Date.now()).length, 0);
+});
+
+test('when >3 fire, exactly 3 returned in danger>warning>info order', () => {
+  const now = Date.now();
+
+  // Build turns that fire all 4 triggers simultaneously
+  const turns = [];
+  // Cache DANGER: rateNow<10%, ratePrev>25%, weekTotal>50k
+  // Input=50000, cacheRead=0, output=50000; prev: input=10000, cacheRead=4000
+  turns.push(turn({ session_id:'c1', timestamp: new Date(now-3*86400000).toISOString(),
+    input_tokens:50000, output_tokens:50000, cache_read_tokens:0, is_peak_hour:1,
+    model:'claude-opus-4-5', cache_creation_tokens:0 }));
+  turns.push(turn({ session_id:'cp1', timestamp: new Date(now-10*86400000).toISOString(),
+    input_tokens:10000, output_tokens:0, cache_read_tokens:4000, is_peak_hour:0,
+    model:'claude-sonnet-3-7', cache_creation_tokens:0 }));
+  // Spiral: 3 sessions, 6 turns each with high ratio
+  for (let i=0; i<3; i++) {
+    const sid = `sp-${i}`;
+    const tokPattern = [0,0,100,500,500,500];
+    for (let j=0; j<6; j++) {
+      turns.push(turn({ session_id:sid, timestamp: new Date(now-2*86400000+j*60000).toISOString(),
+        input_tokens:tokPattern[j], output_tokens:0, cache_read_tokens:0, is_peak_hour:1,
+        model:'claude-sonnet-3-7', cache_creation_tokens:0 }));
+    }
+  }
+  // Opus waste: 5 sessions with <4 turns
+  for (let i=0; i<5; i++) {
+    turns.push(turn({ session_id:`ow-${i}`, timestamp: new Date(now-2*86400000).toISOString(),
+      input_tokens:100, output_tokens:0, cache_read_tokens:0, is_peak_hour:0,
+      model:'claude-opus-4-5', cache_creation_tokens:0 }));
+  }
+
+  const ins = computeInsights(turns, now);
+  assert.ok(ins.length <= 3, `max 3: got ${ins.length}`);
+  if (ins.length === 3) {
+    // danger must come before warning, warning before info
+    const severities = ins.map(i => i.severity);
+    const PRIO = { danger:0, warning:1, info:2 };
+    for (let i=1; i<severities.length; i++) {
+      assert.ok(PRIO[severities[i]] >= PRIO[severities[i-1]], `order wrong: ${severities}`);
+    }
+    // First must be danger (cache DANGER)
+    eq(severities[0], 'danger');
+  }
+});
+
+// ================================================================
+// Phase 3 — session/turn aggregation
+// ================================================================
+console.log('\nPhase 3 — session/turn aggregation');
+
+test('recent_sessions: sorted by last_timestamp desc', () => {
+  const t1 = turn({ session_id:'a', timestamp:'2026-06-10T10:00:00Z', input_tokens:100, output_tokens:0, cache_read_tokens:0 });
+  const t2 = turn({ session_id:'b', timestamp:'2026-06-15T10:00:00Z', input_tokens:200, output_tokens:0, cache_read_tokens:0 });
+  const fd = computeFilteredDataP3([t1, t2]);
+  eq(fd.recent_sessions[0].session_id, 'b');  // more recent first
+  eq(fd.recent_sessions[1].session_id, 'a');
+});
+
+test('recent_sessions: sliced to 20 when 21+ sessions exist', () => {
+  const turns = [];
+  for (let i = 0; i < 21; i++) {
+    turns.push(turn({ session_id:`sess-${i}`,
+      timestamp: new Date(Date.now() - i*3600000).toISOString(),
+      input_tokens: 100, output_tokens: 0, cache_read_tokens: 0 }));
+  }
+  const fd = computeFilteredDataP3(turns);
+  eq(fd.recent_sessions.length, 20);
+});
+
+test('turns_by_session: only top-20 sessions present', () => {
+  const turns = [];
+  for (let i = 0; i < 21; i++) {
+    turns.push(turn({ session_id:`sess-${i}`,
+      timestamp: new Date(Date.now() - i*3600000).toISOString(),
+      input_tokens: 100, output_tokens: 0, cache_read_tokens: 0 }));
+  }
+  const fd = computeFilteredDataP3(turns);
+  // sess-20 is oldest (21st) — should not be in turns_by_session
+  const sids = Object.keys(fd.turns_by_session);
+  eq(sids.length, 20);
+  // The oldest session should be excluded
+  assert.ok(!sids.includes('sess-20'), 'oldest session should be excluded from turns_by_session');
+});
+
+test('turns_by_session: per-session turns sorted ascending by timestamp', () => {
+  const turns = [
+    turn({ session_id:'s1', timestamp:'2026-06-15T16:00:00Z', input_tokens:200, output_tokens:0, cache_read_tokens:0 }),
+    turn({ session_id:'s1', timestamp:'2026-06-15T14:00:00Z', input_tokens:100, output_tokens:0, cache_read_tokens:0 }),
+  ];
+  const fd = computeFilteredDataP3(turns);
+  const ts = fd.turns_by_session['s1'];
+  assert.ok(ts[0].timestamp < ts[1].timestamp, 'turns should be ascending');
+});
+
+test('turns_by_session: only 5 dump-15.1 fields per turn', () => {
+  const fd = computeFilteredDataP3([turn({ session_id:'s1', input_tokens:100, output_tokens:50, cache_read_tokens:10 })]);
+  const t = fd.turns_by_session['s1'][0];
+  const keys = Object.keys(t).sort();
+  assert.deepStrictEqual(keys, ['cache_read_tokens','input_tokens','output_tokens','timestamp','tool_name'].sort());
+});
+
+// Context-growth mini-bar: last turn bar = 100%
+test('context-growth: last turn cumulative = session total (100%)', () => {
+  const turns = [
+    { timestamp:'2026-06-15T14:00:00Z', input_tokens:100, output_tokens:50, cache_read_tokens:0 },
+    { timestamp:'2026-06-15T14:30:00Z', input_tokens:200, output_tokens:100, cache_read_tokens:0 },
+  ];
+  let cumulative = 0;
+  const total = turns.reduce((s,t) => s + t.input_tokens + t.output_tokens, 0);
+  for (const t of turns) cumulative += t.input_tokens + t.output_tokens;
+  eq(cumulative, total);
+  eq(Math.round(cumulative / total * 100), 100);
+});
+
+// Heavy-context: input > 3× turn1 (strict)
+test('heavy-context: input > 3× turn1 is flagged', () => {
+  const turns = [
+    { input_tokens:100 },
+    { input_tokens:301 },  // 301 > 300 = 3*100 → heavy
+  ];
+  const firstInput = turns[0].input_tokens;
+  assert.ok(turns[1].input_tokens > 3 * firstInput, 'should be heavy');
+});
+test('heavy-context: input = 3× turn1 is NOT flagged (strict >)', () => {
+  const turns = [{ input_tokens:100 }, { input_tokens:300 }];
+  const firstInput = turns[0].input_tokens;
+  assert.ok(!(turns[1].input_tokens > 3 * firstInput), '3× exactly should not flag');
+});
+test('heavy-context: turn1 input=0 → nothing flagged (guard)', () => {
+  const turns = [{ input_tokens:0 }, { input_tokens:1000 }];
+  const firstInput = turns[0].input_tokens;
+  // Guard: if firstInput=0, skip flagging
+  assert.ok(firstInput <= 0, 'firstInput=0 guard should skip flagging');
+});
+
+// ================================================================
+// Phase 3 — cost_by_model
+// ================================================================
+console.log('\nPhase 3 — cost_by_model');
+
+test('cost_by_model: opus cost computed correctly', () => {
+  const t = turn({ model:'claude-opus-4-5', input_tokens:1000000, output_tokens:1000000, cache_read_tokens:0 });
+  const fd = computeFilteredDataP3([t]);
+  const opus = fd.cost_by_model.find(m => m.model === 'opus');
+  // (1/1e6)*15 + (1/1e6)*75 = 15 + 75 = 90
+  assert.ok(Math.abs(opus.estimated_cost_usd - 90) < 0.001, `expected 90, got ${opus.estimated_cost_usd}`);
+});
+
+test('cost_by_model: haiku cost computed correctly', () => {
+  const t = turn({ model:'claude-haiku-3-5', input_tokens:1000000, output_tokens:1000000, cache_read_tokens:0 });
+  const fd = computeFilteredDataP3([t]);
+  const haiku = fd.cost_by_model.find(m => m.model === 'haiku');
+  // (1/1e6)*0.25 + (1/1e6)*1.25 = 0.25+1.25 = 1.50
+  assert.ok(Math.abs(haiku.estimated_cost_usd - 1.50) < 0.001, `expected 1.50, got ${haiku.estimated_cost_usd}`);
+});
+
+test('cost_by_model: unknown/other family → $0', () => {
+  const t = turn({ model:'unknown-model', input_tokens:1000000, output_tokens:1000000, cache_read_tokens:0 });
+  const fd = computeFilteredDataP3([t]);
+  const unk = fd.cost_by_model.find(m => m.model === 'unknown');
+  assert.ok(unk, 'unknown family should appear');
+  eq(unk.estimated_cost_usd, 0);
+});
+
+test('cost_by_model: only >0-token families included', () => {
+  const t = turn({ model:'claude-opus-4-5', input_tokens:100, output_tokens:0, cache_read_tokens:0 });
+  const fd = computeFilteredDataP3([t]);
+  assert.ok(fd.cost_by_model.every(m => m.total_tokens > 0), 'all entries must have >0 tokens');
+  eq(fd.cost_by_model.length, 1);
+  eq(fd.cost_by_model[0].model, 'opus');
+});
+
+// ================================================================
+// Phase 3 — summary
+// ================================================================
+console.log('\nPhase 3 — summary');
+
+test('summary: distinct session count', () => {
+  const turns = [
+    turn({ session_id:'a', input_tokens:100, output_tokens:0, cache_read_tokens:0 }),
+    turn({ session_id:'a', input_tokens:200, output_tokens:0, cache_read_tokens:0, timestamp:'2026-06-15T15:00:00Z' }),
+    turn({ session_id:'b', input_tokens:300, output_tokens:0, cache_read_tokens:0 }),
+  ];
+  const fd = computeFilteredDataP3(turns);
+  eq(fd.summary.total_sessions, 2);
+  eq(fd.summary.total_turns, 3);
+});
+
+test('summary: token sums correct', () => {
+  const turns = [
+    turn({ session_id:'a', input_tokens:100, output_tokens:50, cache_read_tokens:10 }),
+    turn({ session_id:'a', input_tokens:200, output_tokens:100, cache_read_tokens:5, timestamp:'2026-06-15T15:00:00Z' }),
+  ];
+  const fd = computeFilteredDataP3(turns);
+  eq(fd.summary.total_input, 300);
+  eq(fd.summary.total_output, 150);
+  eq(fd.summary.total_cache_read, 15);
+});
+
+test('summary: total_api_cost = sum of cost_by_model', () => {
+  const t = turn({ model:'claude-sonnet-3-7', input_tokens:1000000, output_tokens:1000000, cache_read_tokens:0 });
+  const fd = computeFilteredDataP3([t]);
+  const expected = (1) * 3.00 + (1) * 15.00;  // 1M input + 1M output
+  assert.ok(Math.abs(fd.summary.total_api_cost_usd - expected) < 0.001, `got ${fd.summary.total_api_cost_usd}`);
+  assert.ok(Math.abs(fd.total_api_cost_usd - expected) < 0.001, 'top-level total_api_cost_usd matches');
+});
 
 // ================================================================
 // Summary

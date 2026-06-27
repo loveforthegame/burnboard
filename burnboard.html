@@ -203,6 +203,40 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .heatmap-hour-label{font-size:9px;color:var(--mu2);text-align:center}
 .heatmap-note{font-size:11px;color:var(--mu2);margin-top:10px}
 .heatmap-empty{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--mu);font-size:13px}
+
+/* Phase 3 — Insights, Sessions, Cost/Summary (dump 4.5, 7.3, 7.9, 7.10) */
+.btn-copy{background:var(--s2);border:1px solid var(--bdr);color:var(--mu);font-family:'Outfit',sans-serif;font-weight:500;font-size:12px;border-radius:8px;padding:6px 12px;cursor:pointer;transition:background .15s,color .15s}
+.btn-copy.copied{background:rgba(52,211,153,.15);color:var(--green)}
+.insight-card{margin-bottom:10px}
+.insight-title{font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px}
+.insight-body{font-size:13px;color:var(--mu);line-height:1.6;margin-bottom:10px}
+.insight-copy-row{display:flex;justify-content:flex-end}
+.sessions-table{width:100%;border-collapse:collapse;font-size:13px}
+.sessions-table th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--mu);padding:0 10px 8px;border-bottom:1px solid var(--bdr)}
+.sessions-table td{padding:9px 10px;border-bottom:1px solid var(--bdr);vertical-align:middle}
+.sessions-table tbody tr.session-row{cursor:pointer;transition:background .15s}
+.sessions-table tbody tr.session-row:hover{background:rgba(255,255,255,.03);border-color:var(--bdr2)}
+.sessions-table tbody tr.session-row.open{background:rgba(255,255,255,.04)}
+.session-detail-row td{padding:0}
+.session-detail{padding:10px 12px;background:var(--s2);border-radius:8px;margin:4px 8px 8px}
+.detail-table{width:100%;border-collapse:collapse;font-size:12px}
+.detail-table th{text-align:left;font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--mu2);padding:0 8px 6px;border-bottom:1px solid var(--bdr)}
+.detail-table td{padding:6px 8px;border-bottom:1px solid var(--bdr);vertical-align:middle}
+.detail-table tr:last-child td{border-bottom:none}
+.detail-table tr.heavy-context td{background:var(--amdim)}
+.heavy-label{font-size:10px;color:var(--amber);float:right;margin-top:1px}
+.mini-bar-track{height:3px;background:var(--s4);border-radius:2px;overflow:hidden;margin-top:4px;min-width:60px}
+.mini-bar-fill{height:100%;background:var(--accent);border-radius:2px}
+.chevron{font-size:11px;color:var(--mu);transition:transform .2s}
+.session-row.open .chevron{transform:rotate(90deg)}
+.kv-list{display:flex;flex-direction:column;gap:10px}
+.kv-row{display:flex;justify-content:space-between;align-items:center;font-size:13px}
+.kv-label{color:var(--mu)}
+.cost-table{width:100%;border-collapse:collapse;font-size:13px}
+.cost-table th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--mu);padding:0 10px 8px;border-bottom:1px solid var(--bdr)}
+.cost-table td{padding:8px 10px;border-bottom:1px solid var(--bdr)}
+.cost-table tr:last-child td{border-bottom:none}
+.cost-note{font-size:11px;color:var(--mu2);margin-top:12px}
 </style>
 </head>
 <body>
@@ -360,6 +394,12 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
   console.assert(_state('2026-06-15T15:00:00Z', 0,  0,  false) === 'no_data',        'SC11');
   console.assert(_state('2026-06-15T10:00:00Z', 75, 50, true)  === 'caution_budget', 'SC12');
   console.assert(_state('2026-06-15T10:00:00Z', 50, 50, true)  === 'good',           'SC13');
+
+  // Phase 3 self-check: computeInsights boundary (empty turns → no insights)
+  console.assert(computeInsights([], Date.now()).length === 0, 'SC14: no turns → no insights');
+  // fmtSessionDur boundary
+  console.assert(fmtSessionDur(0) === '< 1 min', 'SC15: 0ms → < 1 min');
+  console.assert(fmtSessionDur(3600000) === '1h 0m', 'SC16: 1h → 1h 0m');
   console.log('[BurnBoard] self-check passed');
 })();
 
@@ -497,6 +537,14 @@ async function saveConfig(c) {
 // ================================================================
 // CONSTANTS (dump 15.2, 17)
 // ================================================================
+// dump §16 — API pricing equivalent (USD per 1M tokens). NOT what the user paid.
+// ponytail: unknown-model tokens are not priced (no entry here); treat as $0.
+// Upgrade = add a fallback rate if a future model family appears.
+const PRICING = {
+  opus:   { input: 15.00, output: 75.00 },
+  sonnet: { input:  3.00, output: 15.00 },
+  haiku:  { input:  0.25, output:  1.25 },
+};
 const CAPS = {
   pro:   { opus:0,  sonnet:60  },
   max5x: { opus:25, sonnet:210 },
@@ -755,6 +803,169 @@ function planLabel(plan) {
   return { pro:'Pro · $20', max5x:'Max 5x · $100', max20x:'Max 20x · $200', api:'API' }[plan] || 'Max 5x · $100';
 }
 
+// ================================================================
+// PHASE 3 — PURE COMPUTE HELPERS (dump 7.3, 7.9)
+// ================================================================
+
+// localPeakRange(tz): convert 13:00–19:00 UTC to local-TZ string.
+// ponytail: reuses heatmap's TZ-abbr/fallback pattern; extracted as helper to avoid duplication.
+function localPeakRange(tz) {
+  const refStart = new Date('2026-01-05T13:00:00Z');
+  const refEnd   = new Date('2026-01-05T19:00:00Z');
+  const fmt = new Intl.DateTimeFormat(undefined, { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+  return `${fmt.format(refStart).toLowerCase()} – ${fmt.format(refEnd).toLowerCase()}`;
+}
+
+// fmtSessionDur(ms): dump 7.9 session duration format (distinct from fmtDur).
+// <60s → '< 1 min'; <60min → 'N min'; >=60min → 'Hh Mm'
+function fmtSessionDur(ms) {
+  if (ms < 60000) return '< 1 min';
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), rm = m % 60;
+  return `${h}h ${rm}m`;
+}
+
+// relWhen(iso): relative time per dump 7.9 examples.
+// <60min → 'Nm ago'; <24h → 'Nh ago'; 1-day-old → 'yesterday'; older → 'MMM D'
+// ponytail: keep existing relTime() for sync header; relWhen is the session-table variant.
+function relWhen(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 48) return 'yesterday';
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso));
+}
+
+// computeInsights(allTurns, now): pure function — returns insight objects (pre-priority-sort).
+// Called from loadDataLocal so insights run on the UNFILTERED path (dump 7.4).
+function computeInsights(allTurns, now) {
+  const DAY_MS = 86400000;
+  const last7  = now - 7  * DAY_MS;
+  const prev7s = now - 14 * DAY_MS;
+
+  const fired = [];
+
+  // ---- Trigger 1: Session Spiral (dump 7.3) ----
+  // Sessions with >=1 turn in last 7 days AND >5 turns total, ratio avgLate/avgEarly > 3.0
+  // ponytail: "last 7 days" = any-turn-in-window; upgrade = first_timestamp if it matters.
+  // ponytail: turn-3 counted in both groups per dump's literal "1–3" and "3–end" ranges;
+  //           ceiling = boundary ambiguity; upgrade = clarify with spec author if a future audit flags it.
+  const sessMap = {};
+  for (const t of allTurns) {
+    if (!sessMap[t.session_id]) sessMap[t.session_id] = [];
+    sessMap[t.session_id].push(t);
+  }
+  let spiralCount = 0;
+  for (const turns of Object.values(sessMap)) {
+    const inWindow = turns.some(t => new Date(t.timestamp).getTime() >= last7);
+    if (!inWindow) continue;
+    if (turns.length <= 5) continue;
+    const sorted = [...turns].sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+    const toks = sorted.map(t => t.input_tokens + t.output_tokens);
+    const early = toks.slice(0, 3);
+    const late  = toks.slice(2);        // turns[2..end] — overlaps turn-3 per spec
+    const avgEarly = early.reduce((s,v) => s+v, 0) / early.length;
+    if (avgEarly <= 0) continue;
+    const avgLate = late.reduce((s,v) => s+v, 0) / late.length;
+    if (avgLate / avgEarly > 3.0) spiralCount++;
+  }
+  if (spiralCount >= 3) {
+    fired.push({
+      type: 'spiral', severity: 'warning',
+      title: 'your sessions get expensive fast',
+      body: `<span class="mono">${spiralCount}</span> recent sessions had 3× cost growth turn-by-turn. The longer you stay in one conversation, the more every message costs — claude re-reads the whole history each turn.`,
+      copy_text: 'Run /compact every 30–45 minutes in long sessions, or use /clear when switching to a new task.',
+    });
+  }
+
+  // ---- Trigger 2: Cache Alert (dump 7.3) ----
+  let cacheReadNow = 0, inputNow = 0, totalTokNow = 0;
+  let cacheReadPrev = 0, inputPrev = 0;
+  for (const t of allTurns) {
+    const ts = new Date(t.timestamp).getTime();
+    if (ts >= last7) {
+      cacheReadNow += t.cache_read_tokens;
+      inputNow     += t.input_tokens;
+      totalTokNow  += t.input_tokens + t.output_tokens;
+    } else if (ts >= prev7s) {
+      cacheReadPrev += t.cache_read_tokens;
+      inputPrev     += t.input_tokens;
+    }
+  }
+  const denomNow  = cacheReadNow  + inputNow;
+  const denomPrev = cacheReadPrev + inputPrev;
+  const rateNow  = denomNow  > 0 ? cacheReadNow  / denomNow  : 0;
+  const ratePrev = denomPrev > 0 ? cacheReadPrev / denomPrev : 0;
+
+  if (rateNow < 0.10 && ratePrev > 0.25 && totalTokNow > 50000) {
+    fired.push({
+      type: 'cache', severity: 'danger',
+      title: 'something looks wrong with your cache',
+      body: `cache hit rate dropped from <span class="mono">${Math.round(ratePrev*100)}</span>% to <span class="mono">${Math.round(rateNow*100)}</span>% this week. this usually means a claude code bug is silently burning 10–20× more tokens.`,
+      copy_text: 'Run: claude --version\nIf above 2.1.34, run: npm update -g @anthropic-ai/claude-code',
+    });
+  } else if (rateNow < 0.15 && totalTokNow > 100000) {
+    fired.push({
+      type: 'cache', severity: 'warning',
+      title: 'your cache efficiency is low',
+      body: `only <span class="mono">${Math.round(rateNow*100)}</span>% of input tokens are coming from cache. healthy is 40–70%. changing your CLAUDE.md between sessions kills cache reuse.`,
+      copy_text: 'Put stable rules at the top of CLAUDE.md (these get cached).\nPut session-specific notes at the bottom.',
+    });
+  }
+
+  // ---- Trigger 3: Peak Hour Penalty (dump 7.3) ----
+  let peakTok = 0, totalTok7 = 0;
+  for (const t of allTurns) {
+    if (new Date(t.timestamp).getTime() < last7) continue;
+    const tok = t.input_tokens + t.output_tokens;
+    totalTok7 += tok;
+    if (t.is_peak_hour === 1) peakTok += tok;
+  }
+  const peakPct = totalTok7 > 0 ? peakTok / totalTok7 : 0;
+  if (peakPct > 0.50) {
+    const tz = _cfg ? (_cfg.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone) : Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const localRange = localPeakRange(tz);
+    fired.push({
+      type: 'peak', severity: 'info',
+      title: 'half your usage is during peak hours',
+      body: `<span class="mono">${Math.round(peakPct*100)}</span>% of your claude code use this week happened during peak hours (5–11am PT / ${localRange}).`,
+      copy_text: 'Peak hours: weekdays 5–11am PT (13:00–19:00 UTC).\nFor big sessions, start before 5am PT or after 11am PT.',
+    });
+  }
+
+  // ---- Trigger 4: Opus Waste (dump 7.3) ----
+  // Sessions with >=1 turn in last 7 days, turn_count < 4 (strict), dominant model = opus
+  // ponytail: dominant family computed inline over session's turns (matches buildSessions logic);
+  //           upgrade = read from sessions store if perf matters.
+  let opusWasteCount = 0;
+  for (const [sid, turns] of Object.entries(sessMap)) {
+    const inWindow = turns.some(t => new Date(t.timestamp).getTime() >= last7);
+    if (!inWindow) continue;
+    if (turns.length >= 4) continue;  // strictly < 4 turns
+    const vol = { opus:0, sonnet:0, haiku:0, other:0 };
+    for (const t of turns) vol[modelFamily(t.model)] += t.input_tokens + t.output_tokens;
+    const dominant = Object.entries(vol).sort((a,b) => b[1]-a[1])[0][0];
+    if (dominant === 'opus') opusWasteCount++;
+  }
+  if (opusWasteCount >= 5) {
+    fired.push({
+      type: 'opus_waste', severity: 'info',
+      title: 'using opus for quick questions',
+      body: `you have <span class="mono">${opusWasteCount}</span> sessions with under 4 turns using opus. haiku handles quick lookups and simple edits just as well and costs 15× less against your weekly cap.`,
+      copy_text: 'Add to CLAUDE.md:\nUse Haiku for: quick edits, formatting, simple Q&A.\nUse Sonnet for: new code, refactors, multi-step tasks.\nUse Opus only when I explicitly ask.',
+    });
+  }
+
+  // Priority sort: danger(0) > warning(1) > info(2); stable within same severity.
+  const PRIO = { danger: 0, warning: 1, info: 2 };
+  fired.sort((a, b) => PRIO[a.severity] - PRIO[b.severity]);
+  return fired.slice(0, 3);
+}
+
 async function loadDataLocal() {
   const now      = Date.now();
   const plan     = _cfg.plan || 'max5x';
@@ -805,10 +1016,13 @@ async function loadDataLocal() {
   const projOpusPct    = opusPct / fracElapsed;
   const daysUntilReset = Math.ceil((mondayTs + 7*86400000 - now) / 86400000);
 
+  const insights = computeInsights(allTurns, now);
+
   return { hasTurns, tz, plan, caps,
            opusPct, sonnetPct, opusHours, sonnetHours,
            winRemainingMs, winStartedMins,
-           todayVsAvg, projOpusPct, daysUntilReset, mondayTs, now };
+           todayVsAvg, projOpusPct, daysUntilReset, mondayTs, now,
+           insights };
 }
 
 // ================================================================
@@ -908,7 +1122,70 @@ async function loadFilteredData() {
 
   const days_with_data = daily_usage.length;
 
-  return { daily_usage, heatmap, model_breakdown, top_projects, days_with_data };
+  // --- recent_sessions (dump 15.1, 7.9) — last 20 sessions from filtered turns ---
+  // ponytail: rebuild sessions from filtered turns via buildSessions so model/range filters apply;
+  //           sessions store holds all-data sessions. Upgrade = query sessions store + per-turn
+  //           re-filter if buildSessions gets expensive on large datasets.
+  const allSessions = buildSessions(turns);
+  const recent_sessions = allSessions
+    .sort((a, b) => b.last_timestamp > a.last_timestamp ? 1 : -1)
+    .slice(0, 20);
+
+  // --- turns_by_session (dump 15.1) — only for the top-20 sessions ---
+  const top20sids = new Set(recent_sessions.map(s => s.session_id));
+  const turns_by_session = {};
+  for (const t of turns) {
+    if (!top20sids.has(t.session_id)) continue;
+    if (!turns_by_session[t.session_id]) turns_by_session[t.session_id] = [];
+    turns_by_session[t.session_id].push({
+      timestamp:        t.timestamp,
+      input_tokens:     t.input_tokens,
+      output_tokens:    t.output_tokens,
+      cache_read_tokens:t.cache_read_tokens,
+      tool_name:        t.tool_name,
+    });
+  }
+  for (const sid of Object.keys(turns_by_session)) {
+    turns_by_session[sid].sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+  }
+
+  // --- cost_by_model (dump 15.1, §16) ---
+  // ponytail: cache_read/cache_creation tokens not priced (dump §16 lists only input/output rates);
+  //           upgrade = add cache pricing if spec ever lists it.
+  const famInput  = { opus:0, sonnet:0, haiku:0, other:0 };
+  const famOutput = { opus:0, sonnet:0, haiku:0, other:0 };
+  for (const t of turns) {
+    const fam = modelFamily(t.model);
+    famInput[fam]  += t.input_tokens;
+    famOutput[fam] += t.output_tokens;
+  }
+  const cost_by_model = ['opus','sonnet','haiku'].map(fam => {
+    const inp = famInput[fam], out = famOutput[fam];
+    const total_tokens = inp + out;
+    if (total_tokens === 0) return null;
+    const estimated_cost_usd = (inp / 1e6) * PRICING[fam].input + (out / 1e6) * PRICING[fam].output;
+    return { model: fam, total_tokens, estimated_cost_usd };
+  }).filter(Boolean);
+  // include 'other' (unknown family) with cost 0 if it has tokens
+  const otherTok = famInput.other + famOutput.other;
+  if (otherTok > 0) {
+    cost_by_model.push({ model: 'unknown', total_tokens: otherTok, estimated_cost_usd: 0 });
+  }
+
+  // --- summary (dump 15.1) ---
+  const sidSet = new Set(turns.map(t => t.session_id));
+  const total_api_cost_usd = cost_by_model.reduce((s, m) => s + m.estimated_cost_usd, 0);
+  const summary = {
+    total_sessions:   sidSet.size,
+    total_turns:      turns.length,
+    total_input:      turns.reduce((s,t) => s + t.input_tokens, 0),
+    total_output:     turns.reduce((s,t) => s + t.output_tokens, 0),
+    total_cache_read: turns.reduce((s,t) => s + t.cache_read_tokens, 0),
+    total_api_cost_usd,
+  };
+
+  return { daily_usage, heatmap, model_breakdown, top_projects, days_with_data,
+           recent_sessions, turns_by_session, cost_by_model, summary, total_api_cost_usd };
 }
 
 // ================================================================
@@ -946,12 +1223,24 @@ function renderChartsShell() {
   </div>`;
 }
 
+// ponytail: shell functions produce empty card containers filled by renderFilteredSections,
+// mirroring renderChartsShell pattern.
+function renderSessionsShell() {
+  return `<div class="card au d5" id="sec-sessions"></div>`;
+}
+
+function renderCostShell() {
+  return `<div class="charts-grid" id="sec-cost"></div>`;
+}
+
 async function renderFilteredSections() {
   const fd = await loadFilteredData();
   renderDailyBurn(fd);
   renderHeatmap(fd);
   renderModelBreakdown(fd);
   renderTopProjects(fd);
+  renderSessions(fd);
+  renderCostSummary(fd);
 }
 
 function renderDailyBurn(fd) {
@@ -1231,6 +1520,177 @@ function renderTopProjects(fd) {
 }
 
 // ================================================================
+// PHASE 3 — RENDER FUNCTIONS (dump 7.3, 7.9, 7.10)
+// ================================================================
+
+// copyText: clipboard helper with 1500ms revert (dump 4.5).
+// ponytail: clipboard via navigator.clipboard — Chrome/Edge only; matches the app's
+// Chrome-only File System Access requirement. No execCommand fallback.
+function copyText(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'copy';
+      btn.classList.remove('copied');
+    }, 1500);
+  });
+}
+
+function renderInsights(d) {
+  const { insights } = d;
+  const SEV_CLS = { danger: 'card-red', warning: 'card-amber', info: 'card-orange' };
+  const delayClass = ['d1','d2','d3'];
+
+  let cardsHtml;
+  if (insights.length === 0) {
+    cardsHtml = `<div class="card card-green insight-card au d1">
+      <div class="insight-title">nothing alarming — using claude code efficiently.</div>
+    </div>`;
+  } else {
+    cardsHtml = insights.map((ins, i) => {
+      const cls = SEV_CLS[ins.severity] || '';
+      // Store copy_text in dataset to avoid HTML-escaping bugs with newlines/colons
+      return `<div class="card ${cls} insight-card au ${delayClass[i]}">
+        <div class="insight-title">${ins.title}</div>
+        <div class="insight-body">${ins.body}</div>
+        <div class="insight-copy-row">
+          <button class="btn-copy" data-copy="${i}" onclick="copyText(this, _insightCopies[${i}])">copy</button>
+        </div>
+      </div>`;
+    }).join('');
+    // Store copy texts in a module-level variable to avoid escaping issues
+    window._insightCopies = insights.map(ins => ins.copy_text);
+  }
+
+  return `<div class="card au d1">
+    <div class="forecast-header">
+      <h3>💡 what is going on</h3>
+      <p>based on your actual patterns</p>
+    </div>
+    ${cardsHtml}
+  </div>`;
+}
+
+// Module-level state for one-open-at-a-time session rows.
+let _openSession = null;
+
+function renderSessions(fd) {
+  const el = document.getElementById('sec-sessions');
+  if (!el) return;
+
+  if (fd.recent_sessions.length === 0) {
+    el.innerHTML = `<div class="forecast-header"><h3>📋 recent sessions</h3><p>click a row to expand</p></div>
+      <div class="chart-empty">no sessions in this range</div>`;
+    return;
+  }
+
+  const rows = fd.recent_sessions.map(s => {
+    const model = s.model === 'other' ? 'unknown' : s.model;
+    const durMs = new Date(s.last_timestamp).getTime() - new Date(s.first_timestamp).getTime();
+    return `<tr class="session-row" data-session-row="${s.session_id}">
+      <td>${s.project_name || '—'}</td>
+      <td class="mono">${relWhen(s.last_timestamp)}</td>
+      <td class="mono">${fmtSessionDur(durMs)}</td>
+      <td>${model}</td>
+      <td class="mono">${s.turn_count}</td>
+      <td class="mono">${fmtTokens(s.total_input_tokens + s.total_output_tokens)}</td>
+      <td><span class="chevron">›</span></td>
+    </tr>
+    <tr class="session-detail-row" id="detail-${s.session_id}" style="display:none">
+      <td colspan="7"><div class="session-detail" id="detail-inner-${s.session_id}"></div></td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div class="forecast-header"><h3>📋 recent sessions</h3><p>click a row to expand</p></div>
+    <table class="sessions-table">
+      <thead><tr>
+        <th>Project</th><th>When</th><th>Duration</th><th>Model</th><th>Turns</th><th>Tokens</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderTurnDetail(sessionId, fd) {
+  const el = document.getElementById(`detail-inner-${sessionId}`);
+  if (!el) return;
+  const turns = fd.turns_by_session[sessionId] || [];
+  if (turns.length === 0) { el.innerHTML = '<p style="color:var(--mu);font-size:12px">no turns found</p>'; return; }
+
+  const firstInput = turns[0].input_tokens;
+  let cumulative = 0;
+  const totalCumul = turns.reduce((s,t) => s + t.input_tokens + t.output_tokens, 0);
+
+  const tRows = turns.map(t => {
+    cumulative += t.input_tokens + t.output_tokens;
+    const barPct = totalCumul > 0 ? Math.round(cumulative / totalCumul * 100) : 0;
+    // ponytail: "session max" = final cumulative = total, so last turn bar is always 100%.
+    const isHeavy = firstInput > 0 && t.input_tokens > 3 * firstInput;
+    const heavyCls = isHeavy ? ' heavy-context' : '';
+    const heavyLabel = isHeavy ? '<span class="heavy-label">heavy context</span>' : '';
+    const timeStr = new Intl.DateTimeFormat(undefined, { hour:'numeric', minute:'2-digit' }).format(new Date(t.timestamp));
+    return `<tr class="${heavyCls}">
+      <td class="mono">${timeStr}${heavyLabel}</td>
+      <td class="mono">${fmtTokens(t.input_tokens)}</td>
+      <td class="mono">${fmtTokens(t.output_tokens)}</td>
+      <td class="mono">${fmtTokens(t.cache_read_tokens)}</td>
+      <td>${t.tool_name || '—'}</td>
+      <td style="min-width:70px">
+        <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${barPct}%"></div></div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<table class="detail-table">
+    <thead><tr>
+      <th>Time</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tool used</th><th>Context</th>
+    </tr></thead>
+    <tbody>${tRows}</tbody>
+  </table>`;
+}
+
+function renderCostSummary(fd) {
+  const el = document.getElementById('sec-cost');
+  if (!el) return;
+
+  const costRows = fd.cost_by_model.length === 0
+    ? `<tr><td colspan="3" style="color:var(--mu);font-size:13px;padding:12px 10px">no usage in this range</td></tr>`
+    : fd.cost_by_model.map(m =>
+        `<tr>
+          <td>${m.model}</td>
+          <td class="mono">${fmtTokens(m.total_tokens)}</td>
+          <td class="mono">$${m.estimated_cost_usd.toFixed(2)}</td>
+        </tr>`
+      ).join('');
+
+  const { summary } = fd;
+  const kvRows = [
+    ['Sessions',     String(summary.total_sessions)],
+    ['Turns',        String(summary.total_turns)],
+    ['Input tokens', fmtTokens(summary.total_input)],
+    ['Output tokens',fmtTokens(summary.total_output)],
+    ['Cache reads',  fmtTokens(summary.total_cache_read)],
+    ['API equiv.',   `$${summary.total_api_cost_usd.toFixed(2)}`],
+  ].map(([label, val]) =>
+    `<div class="kv-row"><span class="kv-label">${label}</span><span class="mono c-text">${val}</span></div>`
+  ).join('');
+
+  el.innerHTML = `
+    <div class="card au d5">
+      <div class="forecast-header"><h3>cost by model</h3></div>
+      <table class="cost-table">
+        <thead><tr><th>Model</th><th>Tokens</th><th>Est. Cost</th></tr></thead>
+        <tbody>${costRows}</tbody>
+      </table>
+      <p class="cost-note">api pricing equivalent — not what you paid. you're on a flat subscription.</p>
+    </div>
+    <div class="card au d5">
+      <div class="forecast-header"><h3>summary</h3></div>
+      <div class="kv-list">${kvRows}</div>
+    </div>`;
+}
+
+// ================================================================
 // RENDER
 // ================================================================
 async function renderDashboard() {
@@ -1241,8 +1701,8 @@ async function renderDashboard() {
   document.getElementById('plan-badge').textContent  = planLabel(_cfg.plan);
 
   document.getElementById('dashboard-content').innerHTML =
-    renderStartCheck(d) + renderMiniStats(d) + renderForecast(d) +
-    renderFilterBar() + renderChartsShell();
+    renderStartCheck(d) + renderMiniStats(d) + renderInsights(d) + renderForecast(d) +
+    renderFilterBar() + renderChartsShell() + renderSessionsShell() + renderCostShell();
 
   await renderFilteredSections();
 }
@@ -1435,6 +1895,37 @@ document.getElementById('tab-bar').addEventListener('click', e => {
 // Filter bar — delegated handler (mirrors tab-bar pattern, dump 7.4)
 // Calls renderFilteredSections() only — never re-renders Start Check / Mini Stats / Forecast (AC#1)
 document.getElementById('dashboard-content').addEventListener('click', async e => {
+  // Session row expand/collapse (dump 7.9) — one open at a time
+  const row = e.target.closest('[data-session-row]');
+  if (row) {
+    const sid = row.dataset.sessionRow;
+    const detailRow = document.getElementById(`detail-${sid}`);
+    if (!detailRow) return;
+
+    // Close the previously open row if different
+    if (_openSession && _openSession !== sid) {
+      const prevDetail = document.getElementById(`detail-${_openSession}`);
+      if (prevDetail) prevDetail.style.display = 'none';
+      const prevRow = document.querySelector(`[data-session-row="${_openSession}"]`);
+      if (prevRow) prevRow.classList.remove('open');
+    }
+
+    if (_openSession === sid) {
+      // Second click on same row → close it
+      detailRow.style.display = 'none';
+      row.classList.remove('open');
+      _openSession = null;
+    } else {
+      detailRow.style.display = '';
+      row.classList.add('open');
+      _openSession = sid;
+      // Lazily render turn detail — load filtered data for turns_by_session
+      const fd = await loadFilteredData();
+      renderTurnDetail(sid, fd);
+    }
+    return;
+  }
+
   const btn = e.target.closest('[data-ftype]');
   if (!btn) return;
   const type = btn.dataset.ftype, val = btn.dataset.fval;
