@@ -1,78 +1,138 @@
-# QA Report — Phase 4: history-and-export
-
+# QA Report — Phases 5 + 6: two-account-tracking + tips-tab-and-final-polish
 Date: 2026-06-28
-Criteria source: `ROADMAP.md` § "Phase 4 — history-and-export" (5 acceptance criteria) + `.pipeline/spec.md` (detailed implementation rules)
+Criteria source: `ROADMAP.md` Phase 5 and Phase 6 acceptance checklists; combined spec at `.pipeline/spec.md`
 
 ---
 
 ## Test Suite
 
-`node burnboard.test.js` — **238 tests: 238 passed, 0 failed**
+`node burnboard.test.js` — **288 tests: 288 passed, 0 failed**
 
-All Phase 4 pure-function tests pass: `getWeeklyBuckets` (7 + 4 extended), `aggregateMonths` (8 + 6 extended), `getBillingCycles` (8 + 9 extended), `buildCsvRows` (5 + 3 extended).
+All test groups covered:
+- twoAccountMode (4 tests)
+- filterTurnsByAccount (5 tests)
+- per-account monthly aggregation (3 tests)
+- countMalformed (4 tests)
+- faviconColorForState (7 tests)
+- tipPersonalization (6 tests)
+- Phase 5+6 extended boundary coverage (13 tests)
+- toast priority selection (4 tests)
+- promptAccount dismiss behavior (5 tests)
+- All Phase 1-4 groups (237 tests)
 
 ---
 
-## Results
+## Phase 5 — two-account-tracking
+
+### Results
 
 | Criterion | Status | Evidence |
 |-----------|--------|----------|
-| AC#1 — History tab opens with Monthly / Weekly / Billing Cycle toggle and renders monthly cards newest-first with token totals, sessions, active days, dominant model, and vs-prior delta | PASS (static + tests) | `renderHistory()` emits three `.btn-secondary` pills via `data-hview="monthly|weekly|billing"` (line 1960–1963). `renderMonthlyView()` reads `monthly_cache`, sorts `b.month_key DESC`, slices to 12 (line 1987–1990). Each card shows `total_tokens.toLocaleString()`, sessions, active_days, `top_model`, and delta (`↑/↓ +/-X% vs <month>`) with green/red class (lines 2007–2036). Single-month path shows `not enough history yet` (line 2019). Empty state shows `no monthly history yet` (line 1994). `aggregateMonths` tested: 8 + 6 cases all pass. |
-| AC#2 — `recomputeMonthlyCache()` runs after sync and writes per-month records; the monthly comparison chart and rolling-average overlay render from them | PASS (static) | `recomputeMonthlyCache()` called inside `runSync` at line 792, wrapped in try/catch per spec. Writes `account_label:'combined'` records via `dbBatchPut('monthly_cache', ...)` (line 1794). Chart.js bar chart + dotted `type:'line'` rolling-average overlay (trailing window 3) rendered from `chartRecords` in `renderMonthlyView()` (lines 2067–2117). `if (!window.Chart) return` guard present (line 2064). Destroy-before-recreate on `_monthlyChart` (line 2065). |
-| AC#3 — Weekly view shows the last 12 Mon–Sun weeks (zero-activity weeks faded, oldest week shows "—") plus the sparkline | PASS (static + tests) | `getWeeklyBuckets(allTurns, 12)` called in `renderWeeklyView()` (line 2128). Zero-activity rows: `fadedCls = b.total_tokens === 0 ? ' class="faded"' : ''` (line 2133) — rows kept, not skipped. Oldest week: `isOldest = i === buckets.length - 1` → `vsPrior` stays `'—'` unconditionally (lines 2132–2138). Zero-prior also stays `'—'` (lines 2141–2148). Sparkline: Chart.js `type:'line'`, `fill:true`, `backgroundColor:'rgba(249,115,22,.15)'`, `borderColor:'#F97316'`, oldest-left (lines 2177–2208). `getWeeklyBuckets` tests: Monday boundary, week-1 placement, oldest-first order, empty turns all pass. |
-| AC#4 — Billing cycle view uses `billing_start` to show the current cycle card and last-3-cycles table | PASS (static + tests) | `renderBillingView()` reads `_cfg.billing_start` at line 2219 (`const bsd = Number(_cfg.billing_start) || 1`). No `billing_start_day` key present anywhere in the file (grep returned zero results). `getBillingCycles(allTurns, bsd, Date.now())` called at line 2220. Current-cycle card shows day/total/vs-same-point/progress-bar (lines 2261–2269). Last-3 table with `●` marker, `ongoing` label, `vs avg` column (lines 2282–2318). Empty state: `no billing history yet` when no turns (line 2224). `getBillingCycles` tests: billing_start=1 mid-month, billing_start=15 day<15 (prior-month start), day_index clamp, year-boundary rollback, Feb days_in_cycle, half-open interval — all pass. |
-| AC#5 — Export CSV downloads `burnboard-history-YYYY-MM-DD.csv` with the specified columns, fully client-side | PASS (static + tests) | `exportHistoryCsv()` (line 1922): reads `monthly_cache`, filters `account_label==='combined'`, calls `buildCsvRows()`, creates `new Blob([csv],{type:'text/csv'})`, `URL.createObjectURL`, temporary `<a download="burnboard-history-YYYY-MM-DD.csv">`, `.click()`, `URL.revokeObjectURL` (lines 1923–1934). No network call. Header is exactly `month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model` (line 1908). `cache_reads` correctly maps from `cache_read_tokens` (line 1911). Empty records → header-only (line 1909). `buildCsvRows` tests: header exact, column order, raw integers, no trailing newline — all pass. |
+| With Account 2 empty, no account UI appears anywhere (single-account users see nothing new). | PASS | `twoAccountMode()` (line 2081) gates all account UI — sync prompt, account selector, combined card. Empty or whitespace `account_2_name` returns false. Verified by SC23/SC24 self-checks and 4 test cases. |
+| With Account 2 named, clicking sync shows the account prompt; the chosen label is written to every turn from that sync, and "Both / Unsure" tags as "combined". | PASS (logic) / CANNOT-VERIFY-HEADLESS (modal click) | `pickFolder()` (line 3179) and `runResync()` (line 3168) call `promptAccount()` when `twoAccountMode()`. Modal has three buttons: acct1 name, acct2 name, `Both / Unsure` which resolves `'combined'` (line 2693). Label passed to `runSync(dh, label)` and written to `account_label` on every turn at line 867. |
+| History tab shows the account selector (All / Primary / Alt) and filters all history views to the selection. | PASS | Account selector rendered in `renderHistory()` (line 2237) gated on `twoAccountMode()`. Uses real configured names, not hardcoded labels. `_historyAccount` drives `cacheLabel` in monthly (line 2306), `filterTurnsByAccount` in weekly (line 2456) and billing (line 2548). Delegated listener at line 2212 handles `[data-haccount]` clicks. |
+| The combined-totals card shows per-account and combined tokens/sessions. | PASS | `renderHistory()` renders combined-totals card (lines 2254-2288) with three columns: acct1, acct2, Combined. Token and session values wrapped in `<span class="mono">`. Sourced from `monthly_cache` via `sumCache()` per label. |
+| Dashboard tab (Start Check, Forecast, Mini Stats) keeps using all data regardless of account label. | PASS | `loadDataLocal()` (line 1153) calls `dbGetAll('turns')` with no account filter. No account-filtering code exists in the dashboard render path. Confirmed unchanged. |
+| Clearing Account 2 reverts the UI to single-account view without losing already-tagged turns. | PASS | `saveSettings()` (line 3148) stores `account_2_name: ''`. On next render, `twoAccountMode()` returns false — account selector and combined card are hidden. No IDB data is wiped. Already-tagged turns remain untouched. |
 
 ---
 
-## Four Pure Seams — Detailed Verification
+## Phase 6 — tips-tab-and-final-polish
 
-| Seam | Key Checks | Status |
-|------|-----------|--------|
-| `getWeeklyBuckets(turns, n, now)` | Monday boundary: turn at `thisMonday 00:00 UTC` in week 0 (>=startIso, <endIso via ISO string comparison). Turn 1ms before Monday lands in week 1. Returns `n` buckets oldest-first after `.reverse()`. Empty turns → all-zero, length n. Zero-activity weeks included (not dropped). Cross-month label shows both months. | PASS |
-| `aggregateMonths(turns)` | Two months produce separate records with correct `total_tokens`/`input_tokens`/`output_tokens`/`cache_read_tokens`/`sessions` (Set.size)/`active_days` (Set.size)/`top_model`. Tie-break: opus>sonnet>haiku stable (sort by value desc, fixed array order). Uses `t.month_key` with fallback to `t.timestamp.substring(0,7)`. | PASS |
-| `getBillingCycles(turns, billingStartDay, now)` | `billing_start=1` mid-month: cycle is 1st to last day. `billing_start=15`, day 10: cycle starts prior month's 15th. `day_index` = 1 on first day; clamped to `days_in_cycle` when overrun. `days_in_cycle` correct across month boundary (Jan→Feb = 31, Feb→Mar non-leap = 28). Half-open `[start, nextStart)` interval. Returns 4 cycles newest-first. Year-boundary rollback (`billing_start=15`, Jan 5 → Dec 15 prior year). | PASS |
-| `buildCsvRows(records)` | Header exactly `month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model`. `cache_reads` sourced from `cache_read_tokens`. Raw integers (no separators). No trailing newline. Empty → header-only. | PASS |
+### Results
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Token Tips tab shows all six cards with saving-badge pills and working copy buttons; personalisation badges replace generic text once 7+ days of data exist. | PASS | Six cards in `TIPS` const (lines 2742-2788) with verbatim titles and saving badges. `renderTips()` (line 2791) passes `tipPersonalization()` results to each card; when personalised, badge text replaces the generic saving. Copy buttons use `copyText()` (line 1707) with 1500ms revert. Card stagger: `animation-delay:${i * 60}ms`. |
+| After a browser restart with a saved handle but revoked permission, the Reconnect screen appears and its CTA reconnects in one click without a new picker; the skip link loads the dashboard from IDB. | PASS (logic) / CANNOT-VERIFY-HEADLESS (requires revoked permission in browser) | Boot path (line 3215-3218): when `perm !== 'granted'` and `dh` exists, `showScreen('reconnect')` is called. `reconnectFolder()` (line 2704) calls `dh.requestPermission({ mode:'read' })` with no `showDirectoryPicker()` call. `skipReconnect()` (line 2718) calls `renderDashboard(); showScreen('app')`. Verbatim copy on reconnect screen matches spec exactly. |
+| What's Coming tab renders the static teaser with feature pills and email-capture UI (no network calls). | PASS | `renderWhatsComing()` (line 2831) is pure DOM injection, no async. `wcSubmit()` (line 2857) only hides input/button and shows thanks text. Three feature pills present. Grep for fetch/XHR/WebSocket/sendBeacon returns zero results in `burnboard.html`. |
+| Toasts fire for "all caught up ✓" (0 new turns) and malformed-line counts; favicon reflects the current Start Check state. | PASS (logic) / CANNOT-VERIFY-HEADLESS (visual display) | `runSync()` lines 924-929: skipped toast wins over caught-up when both conditions true (per spec priority). Malformed lines: `skipped <span class="mono">N</span> malformed lines`. `setFavicon(_lastCheckState)` at line 2880, called every `renderDashboard()`. All 6 states return correct hex colors. 7 favicon tests pass. |
+| Firefox/Safari shows the amber browser-support bar with the folder button disabled; cancelling the picker is swallowed silently; mid-sync failure shows a retry and falls back to existing IDB data. | PASS (logic) / CANNOT-VERIFY-HEADLESS | Boot (3195-3203): `!window.showDirectoryPicker` disables `connect-btn`, adds `visible` to `#compat-warning`, shows skip link if turns exist. AbortError swallowed at line 3182. `runSync()` wrapped in try/catch (lines 818, 934-947): shows `#sync-error` and retry button on failure; calls `renderDashboard(); showScreen('app')` if saved turns exist. |
+| With `prefers-reduced-motion` set, all entrance/stagger/counter animations are disabled. | PASS (CSS static) / CANNOT-VERIFY-HEADLESS | Single global block (lines 271-274): `@media (prefers-reduced-motion: reduce){ *,*::before,*::after{animation:none !important;transition:none !important} .au{opacity:1 !important} }`. Covers fadeUp, fadeDown, spin, toast, and all stagger delays. `.au` forced visible so elements are not left at `opacity:0`. |
 
 ---
 
-## Critical Checks
+## Additional Verification
+
+### Account-label data flow
 
 | Check | Status | Evidence |
 |-------|--------|----------|
-| Billing key is `billing_start` only — no `billing_start_day` introduced | PASS | `grep "billing_start_day" burnboard.html` → zero results. All reads use `_cfg.billing_start` (lines 549, 2219, 2579, 2595). |
-| `recomputeMonthlyCache` writes under `account_label:'combined'` | PASS | Line 1791: `account_label: 'combined'`. Filter in `renderMonthlyView` and `exportHistoryCsv` both use `r.account_label === 'combined'`. |
-| Account dropdown hidden (Phase 5, not built) | PASS | No `[Account: All ▾]`, no account selector, no `data-account` attribute anywhere in history HTML. `renderHistory()` emits only the three view pills and Export CSV button. |
-| `recomputeMonthlyCache` runs post-sync, failure does not crash | PASS | Lines 790–792: called after all turns committed, wrapped in `try { await recomputeMonthlyCache(); } catch (e) { console.error(...); }`. Sync and dashboard continue on failure. |
-| Chart destroy-before-recreate guard | PASS | `_monthlyChart` (line 2065), `_weeklyChart` (line 2175) both destroyed and nulled before `new Chart(...)`. `if (!window.Chart) return` guard on both. |
-| Delegated click listener bound once | PASS | `_historyBound` flag (line 1732) prevents re-binding. Listener is on `panel` (the persistent `#panel-history` div), not on `innerHTML` children, so it survives `panel.innerHTML = ...` reassignment. |
-| vs-prior / vs-avg / vs-same-point with 0 baseline → `—` not NaN/Infinity | PASS | Monthly delta: `prior.total_tokens > 0` guard (line 2010). Weekly vs-prior: `prior.total_tokens > 0` guard (line 2141). Billing vs-same-point: `priorAtPoint > 0` guard (line 2243). Billing vs-avg: `avgTok > 0` guard (line 2288). |
-| No-data month card at 40% opacity | PASS | `.month-card.no-data{opacity:.4}` (CSS line 246). Applied when `r.total_tokens === 0` (line 2021). |
-| Ponytail comments on all spec-required simplifications | PASS | Present on: single-account collapse (line 1782), Monday math reuse (line 1799), cross-month label (line 1816), billing-day<=28 (line 1845), CSV no-escape (line 1903), CSV sort order (line 1918), gap-month omission (line 2022), top_model tint (line 2045), rolling-mean window-3 (line 2050), vs-same-point granularity (line 2232), bar accent color (line 2252), vs-avg baseline (line 2273), re-render-on-click (line 2523). |
-| Numbers in JetBrains Mono | PASS | Monthly card tokens: `.month-card-tokens` class sets `font-family:'JetBrains Mono'` (CSS line 248). Sessions/active_days wrapped in `<span class="mono">` (lines 2030–2031). Weekly table cells use `.mono` class (lines 2151–2154). Billing card uses `.cycle-card-tokens` (CSS line 262). Chart tick/tooltip fonts set to JetBrains Mono throughout. |
+| Both/Unsure resolves to literal `'combined'` string on turns | PASS | `promptAccount()` line 2693 resolves `'combined'`. Written to `account_label` at line 867. |
+| `'combined'`-tagged turns excluded from specific-label monthly cache | PASS | `recomputeMonthlyCache()` line 1946: exact-match filter `t.account_label === label` excludes `'combined'`-tagged turns from acct1/acct2 buckets. 3 test cases pass. |
+| Dashboard uses all turns regardless of label | PASS | `loadDataLocal()` line 1153: `dbGetAll('turns')` with no filter. |
+| `'all'` selector maps to combined cache / all turns | PASS | Monthly: `cacheLabel = _historyAccount === 'all' ? 'combined' : _historyAccount` (line 2306). Weekly/Billing: `filterTurnsByAccount(turns, 'all')` returns all turns (line 2090). |
+| Account 2 cleared reverts without data loss | PASS | `twoAccountMode()` returns false, UI gates hide. IDB untouched. |
 
----
+### Tips personalisation
 
-## Browser-Only Items (Cannot Verify Headless)
+| Check | Status | Evidence |
+|-------|--------|----------|
+| 7-day boundary: 6 active days forces generic | PASS | Line 2130: `if (activeDays.size < 7) return generic`. Test "exactly 6 active days: gate fails" passes. |
+| 7-day boundary: 7 active days enables personalisation | PASS | Test "exactly 7 active days: gate passes (activeDays.size === 7, not < 7)" passes. |
+| Numbers in `<span class="mono">` in personalised badges | PASS | Tip 1: `<span class="mono">${ratio.toFixed(1)}x</span>` (line 2142). Tip 2: `<span class="mono">${spiralCount}</span>` (line 2162). Tip 5: `<span class="mono">${opusWaste}</span>` (line 2172). |
+| Tips 3, 4, 6 always generic (no signal in turn data) | PASS | `return { 1:tip1, 2:tip2, 3:null, 4:null, 5:tip5, 6:null }` (line 2174). Ponytail comment explains ceiling. Verified by test. |
 
-| Item | Assessment |
-|------|-----------|
-| Monthly comparison chart visual render (bar colors, dotted line overlay) | Logic verified: bar tints mapped from `top_model` (line 2047), rolling avg computed in JS (lines 2052–2056), Chart.js `type:'line'` with `borderDash:[4,4]` configured (lines 2079–2087). Cannot pixel-verify without browser. |
-| Weekly sparkline visual render | Logic verified: `fill:true`, `backgroundColor:'rgba(249,115,22,.15)'`, `borderColor:'#F97316'` (lines 2183–2186). Cannot pixel-verify. |
-| CSV Blob download in browser | `Blob` + `createObjectURL` + anchor `.click()` + `revokeObjectURL` pattern at lines 1928–1934 matches spec exactly. Cannot trigger filesystem save headlessly. |
-| Tab switch triggering `renderHistory()` | Wiring at line 2525: `if (btn.dataset.tab === 'history') renderHistory();` confirmed present. Cannot simulate user click. |
-| Month-card 30ms stagger animation | `style="animation-delay:${i * 30}ms"` inline on each `.month-card.au` (line 2025). CSS `.au` keyframe exists. Cannot verify animation plays. |
+### No network calls in What's Coming
+
+| Check | Status | Evidence |
+|-------|--------|----------|
+| No fetch/XHR/WebSocket/sendBeacon | PASS | Grep across full file returns only IDB `.get()` (line 588), which is IndexedDB, not a network call. `wcSubmit()` is purely DOM manipulation. |
+
+### Previously-inert items resolved
+
+| Item | Status | Evidence |
+|------|--------|----------|
+| Tips header button (was `title="coming soon"`) | PASS | Line 399: `onclick="switchToTab('tips')"`. Comment at line 398: "RESOLVED Phase 6". |
+| Boot revoked-permission branch (was Connect fallback) | PASS | Line 3217: `showScreen('reconnect')`. Comment: "RESOLVED Phase 6: permission revoked -> show Reconnect screen (not Connect)." |
+| Per-account monthly cache (was single-label collapse) | PASS | Lines 1942-1953: loops `[acct1, acct2, 'combined']` in two-account mode. Comment line 1933: "RESOLVED Phase 5". |
+
+### Tip card titles and saving badges (verbatim from spec)
+
+| Card | Title | Badge | Status |
+|------|-------|-------|--------|
+| 1 | Tell Claude to talk less | 40-65% output | PASS |
+| 2 | Use /compact in long sessions | 40-70% input | PASS |
+| 3 | Ask for diffs, not full files | 50-80% on edits | PASS |
+| 4 | Add a .claudeignore | 20-60% input | PASS |
+| 5 | Use the right model | up to 80% on simple tasks | PASS |
+| 6 | Trim your CLAUDE.md | 5-15% all input | PASS |
 
 ---
 
 ## Defects Found
 
-None.
+None. No correctness defects identified.
+
+---
+
+## Items Genuinely Untestable Without a Browser
+
+1. Visual rendering of the account prompt modal (backdrop, button labels, dismiss on Esc/backdrop click)
+2. Visual rendering and auto-dismiss of toast messages
+3. Favicon appearing in the browser tab
+4. Reconnect screen (requires browser restart + revoked file handle permission)
+5. `prefers-reduced-motion` media query effect (requires OS accessibility setting)
+6. Firefox/Safari compat warning and disabled button state (requires those browsers)
+7. AbortError from picker cancellation (requires user cancelling the native picker dialog)
+8. Copy-to-clipboard 1500ms revert (requires `navigator.clipboard` in browser context)
+9. Chart.js canvas rendering
+10. Mid-sync failure flow (requires a runtime exception during sync)
+
+All of these are wired correctly at the logic level. None are logic defects.
+
+---
+
+## ROADMAP Coverage Confirmation
+
+All 6 Phase 5 acceptance items: IMPLEMENTED
+All 6 Phase 6 acceptance items: IMPLEMENTED
+No acceptance item across any of Phases 1-6 is left unimplemented.
 
 ---
 
 ## Summary
 
-All 5 ROADMAP acceptance criteria pass. The test suite runs clean at 238/238. Static analysis confirms: `billing_start` (not `billing_start_day`) is the only key used; `monthly_cache` writes exclusively under `account_label:'combined'`; no account dropdown appears in Phase 4; all four pure seams pass their full test suites including boundary edges (Monday 00:00 UTC, billing year-rollback, Feb month-length, half-open intervals); all zero-baseline arithmetic guards are in place; all required ponytail comments are present with named ceilings and upgrade paths. Five browser-only items (chart visuals, CSV download, tab-click wiring, animation) cannot be verified headlessly but have correct logic and DOM wiring confirmed by source inspection.
+All 288 tests pass with 0 failures. Every Phase 5 and Phase 6 ROADMAP acceptance criterion is implemented and verified statically. The account-label data flow is correct throughout: the Primary-in-combined-not-Alt invariant holds via exact-match filtering in both the monthly cache loop and `filterTurnsByAccount()`; the dashboard is always unfiltered; clearing Account 2 reverts the UI without touching IDB data. Tips personalisation uses the correct strictly-greater-than-or-equal-to-7 active-day gate with `<span class="mono">` wrapping on all numeric badge values. What's Coming has zero network calls confirmed by grep. All three previously-inert items (tips header button, reconnect screen branch, per-account monthly cache) are resolved and marked as such in code comments. The 10 items listed as untestable without a browser are all correctly wired at the code and DOM levels.
 
-**QA: PASS**
+QA: PASS

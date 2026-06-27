@@ -145,3 +145,7 @@ note: 1 required: tips personalisation badges + subtext left numbers bare (mono 
 ## 2026-06-28 01:42 — reviewer (re-review) · feature: phase-5-6-combined
 status: VERDICT: SHIP
 note: 4 mono wraps confirmed (matches phase 3 convention), test parity holds (substring asserts survive), billing comment restored. no regressions. block/needs-work cleared.
+
+## 2026-06-28 01:43 — product-qa · feature: phase-5-6-combined
+status: QA PASS
+note: 288/288, all 12 acceptance items (phase 5 + 6) pass, no defects. account flow correct, dashboard always combined, tips mono-wrapped, whats-coming zero network, reduced-motion global block. NO roadmap item unimplemented across all 6 phases.
