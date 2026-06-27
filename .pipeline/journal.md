@@ -114,3 +114,7 @@ note: 238/238 (+18). weekly Monday-boundary single-count, zero-week retained; ag
 ## 2026-06-28 00:46 — reviewer · feature: phase-4-history-and-export
 status: VERDICT: SHIP
 note: diff purely additive (+630/-0 html), phase 1/2/3 untouched. billing_start key confirmed (no duplicate billing_start_day in code). all 10 ponytails present, scope guard honored. 2 cosmetic non-blocking notes.
+
+## 2026-06-28 00:51 — product-qa · feature: phase-4-history-and-export
+status: QA PASS
+note: 238/238, all 5 ACs pass, no defects. billing_start key only, account dropdown hidden, recompute writes 'combined'. CSV columns exact.
