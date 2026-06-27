@@ -1662,6 +1662,167 @@ test('summary: total_api_cost = sum of cost_by_model', () => {
 });
 
 // ================================================================
+// Phase 3 — additional boundary coverage (tester-added)
+// ================================================================
+console.log('\nPhase 3 — additional boundary coverage');
+
+// --- relWhen boundary: exactly 60 minutes ---
+test('relWhen: 60m ago → "1h ago" (not "60m ago")', () => {
+  const iso = new Date(Date.now() - 60 * 60000).toISOString();
+  const r = relWhen(iso);
+  assert.ok(r.endsWith('h ago'), `60m should be "1h ago", got: ${r}`);
+});
+test('relWhen: exactly 59m ago → ends "m ago"', () => {
+  const iso = new Date(Date.now() - 59 * 60000).toISOString();
+  const r = relWhen(iso);
+  assert.ok(r.endsWith('m ago'), `59m should end "m ago", got: ${r}`);
+});
+// 48h boundary: exactly 48h ago is the first ms NOT "yesterday"
+test('relWhen: exactly 47h ago → "yesterday"', () => {
+  const iso = new Date(Date.now() - 47 * 3600000).toISOString();
+  eq(relWhen(iso), 'yesterday');
+});
+test('relWhen: exactly 49h ago → MMM D (not yesterday)', () => {
+  const iso = new Date(Date.now() - 49 * 3600000).toISOString();
+  const r = relWhen(iso);
+  assert.ok(r !== 'yesterday' && !r.endsWith('h ago'), `49h should be MMM D, got: ${r}`);
+});
+
+// --- fmtSessionDur: exact 59-minute boundary ---
+test('fmtSessionDur: 3599999ms (59m 59s) → "59 min"', () => {
+  eq(fmtSessionDur(3599999), '59 min');
+});
+test('fmtSessionDur: 3600001ms (just over 1h) → "1h 0m"', () => {
+  eq(fmtSessionDur(3600001), '1h 0m');
+});
+
+// --- Spiral: session outside 7-day window excluded ---
+test('spiral: session with all turns >7 days ago excluded from count', () => {
+  const now = Date.now();
+  // 3 high-ratio sessions but all turns are 10 days ago (outside last-7 window)
+  const turns = [];
+  for (let i = 0; i < 3; i++) {
+    const sid = `old-spiral-${i}`;
+    for (let j = 0; j < 6; j++) {
+      const ts = new Date(now - 10 * 86400000 + j * 60000).toISOString();
+      turns.push(turn({ session_id: sid, timestamp: ts, input_tokens: j < 3 ? 100 : 500, output_tokens: 0, cache_read_tokens: 0 }));
+    }
+  }
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'spiral'), 'sessions outside 7-day window should not count toward spiral');
+});
+
+// --- Spiral: session with exactly 6 turns qualifies (>5 strict) ---
+test('spiral: exactly 6 turns qualifies (>5 strict)', () => {
+  const now = Date.now();
+  // 3 sessions, each exactly 6 turns with ratio > 3.0
+  const ins = computeInsights(spiralSessions(3, now), now);
+  assert.ok(ins.some(i => i.type === 'spiral'), '6-turn sessions should qualify (>5)');
+});
+
+// --- Opus Waste: sessions outside 7-day window excluded ---
+test('opus_waste: sessions outside 7-day window excluded', () => {
+  const now = Date.now();
+  // 5 opus sessions with <4 turns but all turns 10 days ago
+  const turns = [];
+  for (let i = 0; i < 5; i++) {
+    turns.push(turn({
+      session_id: `old-opus-${i}`, model: 'claude-opus-4-5',
+      timestamp: new Date(now - 10 * 86400000).toISOString(),
+      input_tokens: 500, output_tokens: 0, cache_read_tokens: 0, is_peak_hour: 0,
+    }));
+  }
+  const ins = computeInsights(turns, now);
+  assert.ok(!ins.some(i => i.type === 'opus_waste'), 'opus sessions outside 7-day window should not count');
+});
+
+// --- Peak: session outside 7-day window excluded ---
+test('peak: turns outside 7-day window not counted', () => {
+  const now = Date.now();
+  // All peak-hour tokens are 10 days old (outside window); no in-window turns
+  const turns = [
+    turn({ session_id: 'old-peak', timestamp: new Date(now - 10 * 86400000).toISOString(),
+      input_tokens: 1000, output_tokens: 0, cache_read_tokens: 0, is_peak_hour: 1 }),
+  ];
+  const ins = computeInsights(turns, now);
+  // totalTok7=0 → peakPct=0 → no fire
+  assert.ok(!ins.some(i => i.type === 'peak'), 'peak: out-of-window turns must be excluded');
+});
+
+// --- recent_sessions: exactly 20 sessions → all 20 returned (not sliced to 19) ---
+test('recent_sessions: exactly 20 sessions → all 20 returned', () => {
+  const turns = [];
+  for (let i = 0; i < 20; i++) {
+    turns.push(turn({ session_id: `sess-${i}`,
+      timestamp: new Date(Date.now() - i * 3600000).toISOString(),
+      input_tokens: 100, output_tokens: 0, cache_read_tokens: 0 }));
+  }
+  const fd = computeFilteredDataP3(turns);
+  eq(fd.recent_sessions.length, 20);
+});
+
+// --- recent_sessions: duration = last_timestamp - first_timestamp ---
+test('recent_sessions: first_timestamp and last_timestamp present for duration', () => {
+  const turns = [
+    turn({ session_id: 's1', timestamp: '2026-06-15T10:00:00Z', input_tokens: 100, output_tokens: 0, cache_read_tokens: 0 }),
+    turn({ session_id: 's1', timestamp: '2026-06-15T12:30:00Z', input_tokens: 200, output_tokens: 0, cache_read_tokens: 0 }),
+  ];
+  const fd = computeFilteredDataP3(turns);
+  const s = fd.recent_sessions[0];
+  const durMs = new Date(s.last_timestamp).getTime() - new Date(s.first_timestamp).getTime();
+  eq(fmtSessionDur(durMs), '2h 30m');
+});
+
+// --- cost_by_model: sonnet cost computed correctly ---
+test('cost_by_model: sonnet cost computed correctly', () => {
+  const t = turn({ model: 'claude-sonnet-3-7', input_tokens: 2000000, output_tokens: 500000, cache_read_tokens: 0 });
+  const fd = computeFilteredDataP3([t]);
+  const sonnet = fd.cost_by_model.find(m => m.model === 'sonnet');
+  // (2/1e6)*3.00 + (0.5/1e6)*15.00 = 6.00 + 7.50 = 13.50
+  assert.ok(Math.abs(sonnet.estimated_cost_usd - 13.50) < 0.001, `expected 13.50, got ${sonnet.estimated_cost_usd}`);
+});
+
+// --- cost_by_model: order is opus, sonnet, haiku (then unknown if present) ---
+test('cost_by_model: order is opus, sonnet, haiku', () => {
+  const turns = [
+    turn({ model: 'claude-haiku-3-5',  session_id: 'h', input_tokens: 100, output_tokens: 0, cache_read_tokens: 0 }),
+    turn({ model: 'claude-sonnet-3-7', session_id: 's', input_tokens: 200, output_tokens: 0, cache_read_tokens: 0 }),
+    turn({ model: 'claude-opus-4-5',   session_id: 'o', input_tokens: 300, output_tokens: 0, cache_read_tokens: 0 }),
+  ];
+  const fd = computeFilteredDataP3(turns);
+  eq(fd.cost_by_model[0].model, 'opus');
+  eq(fd.cost_by_model[1].model, 'sonnet');
+  eq(fd.cost_by_model[2].model, 'haiku');
+});
+
+// --- summary: empty turns → zero everything ---
+test('summary: zero turns → all fields zero', () => {
+  const fd = computeFilteredDataP3([]);
+  eq(fd.summary.total_sessions, 0);
+  eq(fd.summary.total_turns, 0);
+  eq(fd.summary.total_input, 0);
+  eq(fd.summary.total_output, 0);
+  eq(fd.summary.total_cache_read, 0);
+  eq(fd.summary.total_api_cost_usd, 0);
+  eq(fd.total_api_cost_usd, 0);
+});
+
+// --- CANNOT-VERIFY-HEADLESS: Phase 3 DOM-only behavior confirmed by static inspection ---
+// 7. copyText 1500ms revert — burnboard.html copyText(): navigator.clipboard.writeText(text),
+//    btn.textContent = 'copied!', btn.classList.add('copied'), setTimeout(() => { restore }, 1500).
+//    1500ms confirmed in setTimeout call. Cannot test navigator.clipboard under Node.
+// 8. One-row-open-at-a-time — module-level `let _openSession = null` toggled in the delegated
+//    click handler on dashboard-content. Clicking a new row calls _openSession's detail.remove()
+//    before inserting the new one. A second click on the same row removes without inserting. DOM-only.
+// 9. Insights on unfiltered path — computeInsights called inside loadDataLocal (line ~1019 in HTML),
+//    result stored in `d.insights`. renderInsights(d) called from renderDashboard(). The filter-bar
+//    click handler calls only renderFilteredSections(), never renderDashboard(). Static inspection
+//    confirms insights are not re-computed on filter change.
+// 10. Sessions+Cost on filtered path — renderSessions/renderCostSummary called only from
+//    renderFilteredSections() (not from renderDashboard()). Confirmed by grep: neither function
+//    appears in renderDashboard() body.
+
+// ================================================================
 // Summary
 // ================================================================
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
