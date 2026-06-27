@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BurnBoard</title>
+<link rel="icon" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -262,6 +263,62 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .cycle-card-tokens{font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:400;line-height:1;margin-bottom:8px}
 .cycle-vs{font-size:13px;color:var(--mu);margin-bottom:12px}
 .cycle-bar-label{font-size:12px;color:var(--mu);margin-bottom:6px}
+
+/* Phase 5+6 — reduced-motion, toast, modal, reconnect, tips, whats-coming, account */
+/* ponytail: one global reduced-motion override instead of per-keyframe guards;
+   ceiling: also kills functional transitions (all currently decorative, fine).
+   Upgrade: scope to decorative selectors if a functional transition is ever added. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important}
+  .au{opacity:1 !important}
+}
+/* Toast */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--s4);border:1px solid var(--bdr2);border-radius:10px;padding:10px 20px;font-size:13px;color:var(--text);opacity:0;pointer-events:none;z-index:99;white-space:nowrap}
+#toast.show{opacity:1;animation:fadeUp .2s ease forwards}
+/* Account prompt modal */
+.modal-center{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:24px 28px;z-index:51;max-width:380px;width:90%;display:none}
+.modal-center.open{display:block}
+.modal-center h3{font-size:14px;font-weight:600;margin-bottom:16px;color:var(--mu)}
+.modal-prompt-btns{display:flex;flex-direction:column;gap:10px}
+/* Reconnect screen */
+#reconnect-screen{min-height:100vh;justify-content:center;align-items:center;padding:40px 20px}
+.reconnect-box{max-width:420px;width:100%;text-align:center}
+.reconnect-icon{font-size:56px;margin-bottom:16px}
+.reconnect-headline{font-size:28px;font-weight:800;margin-bottom:12px}
+.reconnect-body{color:var(--mu);font-size:14px;margin-bottom:28px;line-height:1.6}
+.reconnect-skip{font-size:13px;color:var(--mu);cursor:pointer;background:none;border:none;margin-top:14px;text-decoration:underline;display:block;width:100%;text-align:center;font-family:'Outfit',sans-serif}
+.reconnect-skip:hover{color:var(--text)}
+/* Tips tab */
+.tips-panel{padding:24px;max-width:760px}
+.tip-card{background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:20px 24px;margin-bottom:16px}
+.tip-card-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}
+.tip-title{font-size:15px;font-weight:600;color:var(--text);flex-shrink:1}
+.tip-badge{background:var(--adim);color:var(--accent);border-radius:20px;padding:2px 10px;font-size:12px;font-weight:500;white-space:nowrap;flex-shrink:0}
+.tip-body{font-size:13px;color:var(--mu);line-height:1.6;margin-bottom:12px}
+.tip-code{background:var(--s2);border:1px solid var(--bdr);border-radius:8px;padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);margin-bottom:10px;white-space:pre-wrap;word-break:break-word}
+.tip-copy-row{display:flex;justify-content:flex-end}
+/* What's Coming tab */
+.wc-panel{padding:24px;max-width:560px}
+.wc-hero{text-align:center;margin-bottom:32px}
+.wc-icon{font-size:48px;margin-bottom:12px}
+.wc-headline{font-size:24px;font-weight:800;margin-bottom:8px}
+.wc-sub{color:var(--mu);font-size:14px;margin-bottom:24px;line-height:1.6}
+.wc-pills{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-bottom:28px}
+.wc-pill{background:var(--adim);border:1px solid rgba(249,115,22,.2);color:var(--accent);border-radius:20px;padding:6px 14px;font-size:13px}
+.wc-email-row{display:flex;gap:10px;max-width:360px;margin:0 auto 10px}
+.wc-email-input{flex:1;background:var(--s2);border:1px solid var(--bdr);border-radius:8px;padding:10px 14px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;min-width:0}
+.wc-email-input:focus{border-color:var(--bdr2)}
+.wc-email-thanks{font-size:13px;color:var(--green);margin-top:4px;text-align:center;display:none}
+/* Sync error */
+#sync-error{display:none;text-align:center;margin-top:20px}
+/* Account selector + combined card */
+.account-selector{display:flex;gap:8px;align-items:center}
+.combined-card{background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:20px 24px;margin-bottom:20px}
+.combined-card-header{font-size:13px;color:var(--mu);margin-bottom:14px}
+.combined-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.combined-col-label{font-size:12px;color:var(--mu);margin-bottom:4px}
+.combined-col-value{font-size:18px;color:var(--text);margin-bottom:2px}
+.combined-col-sub{font-size:12px;color:var(--mu)}
 </style>
 </head>
 <body>
@@ -307,6 +364,12 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
       </p>
     </div>
     <div class="warning-bar" id="compat-warning">folder sync needs Chrome or Edge</div>
+    <!-- B6.1: shown in boot when browser lacks showDirectoryPicker AND turns exist in IDB -->
+    <div id="connect-skip-wrap" style="display:none;margin-top:12px">
+      <a href="#" onclick="skipReconnect();return false;" style="font-size:13px;color:var(--mu)">skip and show last data</a>
+    </div>
+    <!-- B6.6: IDB-wiped note (dump §18 verbatim) -->
+    <p class="connect-hint" style="margin-top:14px">if you had data previously, re-syncing rebuilds your full history.</p>
   </div>
 </div>
 
@@ -318,6 +381,10 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
     <div class="sync-progress-bar" id="sync-progress"></div>
   </div>
   <p class="sync-privacy">only token counts and timestamps are being read. no conversation content.</p>
+  <div id="sync-error">
+    <p id="sync-error-msg" style="color:var(--red);font-size:14px;margin-bottom:12px">sync failed. your previous data is still available.</p>
+    <button class="btn-secondary" onclick="retrySync()">↻ retry</button>
+  </div>
 </div>
 
 <!-- App Shell (dump section 6) -->
@@ -328,8 +395,8 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
     <div class="header-lock">🔒 no prompts stored</div>
     <div class="header-spacer"></div>
     <div class="sync-time" id="sync-time">synced just now</div>
-    <!-- ponytail: tips button inert in Phase 1; Tips tab built in Phase 6 -->
-    <button class="btn-secondary" title="coming soon">💬 tips</button>
+    <!-- RESOLVED Phase 6: tips button now switches to tips tab; was inert in Phase 1. -->
+    <button class="btn-secondary" onclick="switchToTab('tips')">💬 tips</button>
     <button class="btn-secondary" onclick="runResync()">↻ sync</button>
     <button class="btn-secondary" onclick="openSettings()">⚙ settings</button>
   </header>
@@ -347,6 +414,31 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
     <div class="tab-panel" id="panel-history"></div>
     <div class="tab-panel" id="panel-tips"></div>
     <div class="tab-panel" id="panel-whats-coming"></div>
+  </div>
+</div>
+
+<!-- Reconnect Screen (dump 5.3) — shown when stored dirHandle exists but permission revoked -->
+<div id="reconnect-screen" class="screen">
+  <div class="reconnect-box">
+    <div class="reconnect-icon">🔌</div>
+    <h1 class="reconnect-headline">browser forgot the folder</h1>
+    <p class="reconnect-body">this is chrome enforcing privacy, not a bug. your data is still here.</p>
+    <button class="btn-primary" onclick="reconnectFolder()">📂 reconnect ~/.claude/projects</button>
+    <button class="reconnect-skip" onclick="skipReconnect()">skip and show last data</button>
+  </div>
+</div>
+
+<!-- Toast (B4) -->
+<div id="toast"></div>
+
+<!-- Account prompt backdrop + modal (A2) -->
+<div class="overlay-backdrop" id="account-backdrop"></div>
+<div class="modal-center" id="account-modal">
+  <h3>which account is this sync from?</h3>
+  <div class="modal-prompt-btns">
+    <button class="btn-primary" id="account-btn-1">Primary</button>
+    <button class="btn-secondary" id="account-btn-2">Alt Account</button>
+    <button class="btn-secondary" id="account-btn-combined">Both / Unsure</button>
   </div>
 </div>
 
@@ -425,6 +517,25 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
   // fmtSessionDur boundary
   console.assert(fmtSessionDur(0) === '< 1 min', 'SC15: 0ms → < 1 min');
   console.assert(fmtSessionDur(3600000) === '1h 0m', 'SC16: 1h → 1h 0m');
+  // Phase 5+6 self-checks: faviconColorForState (all 6 states)
+  console.assert(faviconColorForState('good')           === '#34D399', 'SC17: good → green');
+  console.assert(faviconColorForState('weekend')        === '#34D399', 'SC18: weekend → green');
+  console.assert(faviconColorForState('caution_peak')   === '#FBBF24', 'SC19: caution_peak → amber');
+  console.assert(faviconColorForState('caution_budget') === '#FBBF24', 'SC20: caution_budget → amber');
+  console.assert(faviconColorForState('danger')         === '#F87171', 'SC21: danger → red');
+  console.assert(faviconColorForState('no_data')        === '#6B6460', 'SC22: no_data → muted');
+  // twoAccountMode: acct2 empty/whitespace → false; non-empty → true
+  const _sc_cfg = _cfg;
+  _cfg = { account_1_name: 'Primary', account_2_name: '' };
+  console.assert(!twoAccountMode(), 'SC23: twoAccountMode false when acct2 empty');
+  _cfg = { account_1_name: 'Primary', account_2_name: '  ' };
+  console.assert(!twoAccountMode(), 'SC24: twoAccountMode false when acct2 whitespace');
+  _cfg = { account_1_name: 'Primary', account_2_name: 'Alt' };
+  console.assert(twoAccountMode(), 'SC25: twoAccountMode true when acct2 non-empty');
+  _cfg = _sc_cfg;
+  // tipPersonalization: empty turns → all generic (all null)
+  const _sc_tp = tipPersonalization([], Date.now());
+  console.assert(Object.values(_sc_tp).every(v => v === null), 'SC26: tipPersonalization empty → all generic');
   console.log('[BurnBoard] self-check passed');
 })();
 
@@ -684,20 +795,32 @@ function buildWindows(allTurns) {
 // ================================================================
 async function walkDir(dh, out=[]) {
   for await (const [name, h] of dh.entries()) {
-    if (h.kind === 'directory')          await walkDir(h, out);
-    else if (name.endsWith('.jsonl'))     out.push(h);
+    // ponytail: per-entry try/catch so a permission-denied subdirectory skips+logs instead
+    // of aborting the entire walk (dump §18 B6.5). Ceiling: denied files are silently skipped.
+    // Upgrade: surface denied paths as a warning count in the UI.
+    try {
+      if (h.kind === 'directory')        await walkDir(h, out);
+      else if (name.endsWith('.jsonl'))  out.push(h);
+    } catch (e) {
+      console.error('[BurnBoard] walkDir: skipped', name, e);
+    }
   }
   return out;
 }
 
-async function runSync(dirHandle) {
+async function runSync(dirHandle, accountLabelArg) {
+  document.getElementById('sync-error').style.display = 'none';
   showScreen('sync');
   setStatus('scanning .jsonl files...');
   setProgress(0);
-
+  // Wrap full body in try/catch so a mid-sync exception shows the error state
+  // and falls back to existing IDB data (B6.7, dump §18).
+  try {
   const lastSyncRaw = await dbGet('kv','bb_last_sync');
   const lastSync    = lastSyncRaw ? new Date(lastSyncRaw).getTime() : 0;
-  const accountLabel = _cfg.account_1_name || 'Primary';
+  // Single-account path: no arg → use Account 1 name (or 'Primary').
+  // Two-account path: caller passes chosen label (or Account 1 on dismiss, A2).
+  const accountLabel = accountLabelArg || _cfg.account_1_name || 'Primary';
 
   const allFiles = await walkDir(dirHandle);
   // Incremental: only files modified since last sync (first sync: all files)
@@ -767,6 +890,10 @@ async function runSync(dirHandle) {
   // a .jsonl grows and is re-read on incremental sync (session_id is our dedup key).
   // sessions: put-overwrite (keyPath=session_id, no delete needed).
   // windows: full recompute each sync (see below).
+  // ponytail: a session re-synced under a different account label is fully relabeled to the
+  // latest choice (dedup wipes+reinserts by session_id). Ceiling: cannot split one session_id
+  // across accounts. Upgrade: composite [session_id, account_label] dedup key if
+  // mixed-account sessions ever matter.
   for (const [sid, turns] of Object.entries(sessionMap)) {
     await dbDeleteTurnsBySession(sid);
     await dbBatchPut('turns', turns);
@@ -788,14 +915,36 @@ async function runSync(dirHandle) {
   await dbPut('kv', true, 'bb_visited');
 
   // Phase 4 integration: recompute monthly cache post-sync.
-  // ponytail: failure here must not crash sync or dashboard (Phase 6 adds stale-cache UI notice).
-  try { await recomputeMonthlyCache(); } catch (e) { console.error('[BurnBoard] monthly cache:', e); }
+  // ponytail: failure here must not crash sync or dashboard; _monthlyCacheStale shown in monthly view.
+  try { await recomputeMonthlyCache(); } catch (e) { console.error('[BurnBoard] monthly cache:', e); _monthlyCacheStale = true; }
 
   setProgress(100);
-  if (skippedLines > 0) console.log(`[BurnBoard] skipped ${skippedLines} malformed lines`);
+
+  // B4 toasts: skipped lines is more actionable, so it wins if both conditions are true.
+  // ponytail: if both 0-new AND skipped > 0, show skipped-lines toast (most actionable). ORIGINATED.
+  if (skippedLines > 0) {
+    showToast(`skipped <span class="mono">${skippedLines}</span> malformed lines`);
+  } else if (totalTurns === 0) {
+    showToast('all caught up ✓');
+  }
 
   await renderDashboard();
   showScreen('app');
+
+  } catch (syncError) {
+    // ponytail: on mid-sync failure, fall back to IDB data so user isn't stranded on the spinner;
+    // retry available via the ↻ retry button on sync screen or ↻ sync in header. Ceiling: partial
+    // sync may have written some sessions before failing — those are persisted. Upgrade: wrap each
+    // session batch in a nested try/catch so partial successes accumulate cleanly.
+    console.error('[BurnBoard] sync failed:', syncError);
+    document.getElementById('sync-error').style.display = '';
+    const savedTurns = await dbGetAll('turns').catch(() => []);
+    if (savedTurns.length > 0) {
+      await renderDashboard().catch(() => {});
+      showScreen('app');
+    }
+    // else: stay on sync screen with error + retry button
+  }
 }
 
 // ================================================================
@@ -1728,8 +1877,11 @@ function renderCostSummary(fd) {
 
 // Module state
 let _historyView = 'monthly';
+let _historyAccount = 'all'; // values: 'all', account_1_name, account_2_name; used only when twoAccountMode()
 let _monthlyChart = null, _weeklyChart = null;
 let _historyBound = false; // guard against double-binding the delegated listener
+let _monthlyCacheStale = false; // set true when recomputeMonthlyCache throws; shown as note in monthly view
+let _lastCheckState = 'no_data'; // stashed by renderStartCheck so renderDashboard can set favicon
 
 // ----------------------------------------------------------------
 // aggregateMonths(turns) — PURE core of recomputeMonthlyCache.
@@ -1778,20 +1930,28 @@ function aggregateMonths(turns) {
 
 // ----------------------------------------------------------------
 // recomputeMonthlyCache() — async IDB wrapper around aggregateMonths.
-// Writes under account_label:'combined' (Phase 4 single-account).
-// ponytail: single-account collapse — all months written under 'combined'.
-// Ceiling: no per-account split yet. Upgrade path (Phase 5): loop over real
-// account labels per dump §15.4's `for (const label of accountLabels)`.
+// RESOLVED Phase 5: loops over real account labels (per-account + combined).
+// In twoAccountMode: [acct1, acct2, 'combined']; else ['combined'].
+// 'combined'-tagged turns (Both/Unsure syncs) appear only under 'combined' label.
+// ponytail: orphaned per-account cache rows remain if Account 2 is cleared; harmless
+// (never queried in single-account mode). Upgrade: prune on saveSettings if storage matters.
 // ----------------------------------------------------------------
 async function recomputeMonthlyCache() {
   const turns = await dbGetAll('turns');
-  if (turns.length === 0) return; // edge: no turns → write nothing
-  const records = aggregateMonths(turns).map(r => ({
-    ...r,
-    account_label: 'combined',
-    computed_at: new Date().toISOString(),
-  }));
-  await dbBatchPut('monthly_cache', records);
+  if (turns.length === 0) return;
+  const labels = twoAccountMode()
+    ? [(_cfg.account_1_name || 'Primary'), _cfg.account_2_name.trim(), 'combined']
+    : ['combined'];
+  for (const label of labels) {
+    const labelTurns = label === 'combined' ? turns : turns.filter(t => t.account_label === label);
+    if (labelTurns.length === 0) continue;
+    const records = aggregateMonths(labelTurns).map(r => ({
+      ...r,
+      account_label: label,
+      computed_at: new Date().toISOString(),
+    }));
+    await dbBatchPut('monthly_cache', records);
+  }
 }
 
 // ----------------------------------------------------------------
@@ -1914,15 +2074,118 @@ function buildCsvRows(records) {
 }
 
 // ----------------------------------------------------------------
+// Phase 5+6 pure helpers
+// ----------------------------------------------------------------
+
+// twoAccountMode(): ENABLED only when account_2_name is non-empty (dump 10.2).
+function twoAccountMode() {
+  return !!(_cfg && _cfg.account_2_name && _cfg.account_2_name.trim());
+}
+
+// filterTurnsByAccount(turns, label): PURE. Returns all turns when label==='all',
+// else exact-match on account_label. (label 'all' maps to all turns, not 'combined'.)
+// ponytail: 'combined'-tagged turns (Both/Unsure syncs) are NOT returned when a specific
+// label is queried — exact-string match only. Ceiling: intended per spec A5b.
+function filterTurnsByAccount(turns, label) {
+  if (label === 'all') return turns;
+  return turns.filter(t => t.account_label === label);
+}
+
+// countMalformed(lines): PURE test seam. Counts lines that are non-empty but fail JSON.parse.
+// Matches the skippedLines increment predicate in runSync.
+function countMalformed(lines) {
+  let count = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try { JSON.parse(line); } catch { count++; }
+  }
+  return count;
+}
+
+// faviconColorForState(state): PURE. Returns hex color for SVG favicon dot.
+// ponytail: favicon = single state-colored dot SVG data-URI, not a designed icon.
+// Upgrade: real multi-state PNGs.
+function faviconColorForState(state) {
+  return { good:'#34D399', weekend:'#34D399', caution_peak:'#FBBF24',
+           caution_budget:'#FBBF24', danger:'#F87171', no_data:'#6B6460' }[state] || '#6B6460';
+}
+
+function setFavicon(state) {
+  const color = faviconColorForState(state);
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='${color}'/></svg>`;
+  const el = document.getElementById('favicon');
+  if (el) el.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+
+// tipPersonalization(turns, now): PURE. Returns object keyed 1–6; each value is a badge
+// string (personalised) or null (generic). Personalises only tips 1, 2, 5.
+// ponytail: 7-day active-day gate matches active_days notion in monthly_cache; uses
+// timestamp.substring(0,10) UTC day counting (same bucket as cache). Upgrade: local-TZ
+// day counting if timezone support is added.
+// ponytail: tips 3/4/6 cannot personalise — no diff/ignore/CLAUDE.md signal in turn records.
+// Upgrade: none possible without new data fields.
+function tipPersonalization(turns, now) {
+  const generic = { 1:null, 2:null, 3:null, 4:null, 5:null, 6:null };
+  const activeDays = new Set(turns.map(t => t.timestamp.substring(0, 10)));
+  if (activeDays.size < 7) return generic;
+
+  const last7 = now - 7 * 86400000;
+  const recent = turns.filter(t => new Date(t.timestamp).getTime() >= last7);
+
+  // Tip 1: output/input ratio over last 7 days.
+  // ponytail: threshold >2.0 ORIGINATED — output > 2× input signals verbose responses.
+  // Ceiling: no per-session context; false positives possible with very short context.
+  // Upgrade: weight by session token volume.
+  let totalIn = 0, totalOut = 0;
+  for (const t of recent) { totalIn += t.input_tokens; totalOut += t.output_tokens; }
+  const ratio = totalIn > 0 ? totalOut / totalIn : 0;
+  const tip1 = ratio > 2.0 ? `your data: output ratio is ${ratio.toFixed(1)}×` : null;
+
+  // Tip 2: /compact signal reuses spiral detection (≥3 sessions >3× token growth, last 7d)
+  const sessMap = {};
+  for (const t of recent) {
+    if (!sessMap[t.session_id]) sessMap[t.session_id] = [];
+    sessMap[t.session_id].push(t);
+  }
+  let spiralCount = 0;
+  for (const ts of Object.values(sessMap)) {
+    if (ts.length <= 5) continue;
+    const sorted = [...ts].sort((a, b) => a.timestamp < b.timestamp ? -1 : 1);
+    const toks = sorted.map(t => t.input_tokens + t.output_tokens);
+    const early = toks.slice(0, 3);
+    const late  = toks.slice(2);
+    const avgE = early.reduce((s, v) => s + v, 0) / early.length;
+    if (avgE <= 0) continue;
+    const avgL = late.reduce((s, v) => s + v, 0) / late.length;
+    if (avgL / avgE > 3.0) spiralCount++;
+  }
+  const tip2 = spiralCount >= 3 ? `your data: ${spiralCount} sessions spiraled this week` : null;
+
+  // Tip 5: opus-waste signal reuses opus_waste detection (sessions <4 turns, opus dominant, last 7d)
+  let opusWaste = 0;
+  for (const ts of Object.values(sessMap)) {
+    if (ts.length >= 4) continue;
+    const vol = { opus:0, sonnet:0, haiku:0, other:0 };
+    for (const t of ts) vol[modelFamily(t.model)] += t.input_tokens + t.output_tokens;
+    if (Object.entries(vol).sort((a, b) => b[1] - a[1])[0][0] === 'opus') opusWaste++;
+  }
+  const tip5 = opusWaste >= 5 ? `your data: ${opusWaste} short opus sessions` : null;
+
+  return { 1:tip1, 2:tip2, 3:null, 4:null, 5:tip5, 6:null };
+}
+
+// ----------------------------------------------------------------
 // exportHistoryCsv() — client-side download (dump 8.4).
-// ponytail: CSV source is monthly_cache (account_label='combined'), sorted ascending
-// (ORIGINATED order — dump does not specify; chronological is most natural for data export).
+// ponytail: CSV exports the currently-selected history account's rows. When 'all' is
+// selected, exports 'combined'. ORIGINATED — dump §8.4 doesn't specify which account;
+// exporting the visible selection is the least-surprising behaviour.
 // Edge: no records → header-only CSV (ORIGINATED; always does something predictable).
 // ----------------------------------------------------------------
 async function exportHistoryCsv() {
   const all = await dbGetAll('monthly_cache');
+  const cacheLabel = _historyAccount === 'all' ? 'combined' : _historyAccount;
   const records = all
-    .filter(r => r.account_label === 'combined')
+    .filter(r => r.account_label === cacheLabel)
     .sort((a, b) => a.month_key < b.month_key ? -1 : 1);
   const csv = buildCsvRows(records);
   const blob = new Blob([csv], { type: 'text/csv' });
@@ -1945,6 +2208,13 @@ async function renderHistory() {
   if (!_historyBound) {
     _historyBound = true;
     panel.addEventListener('click', e => {
+      // A5a: account selector buttons
+      const acc = e.target.closest('[data-haccount]');
+      if (acc) {
+        _historyAccount = acc.dataset.haccount;
+        renderHistory();
+        return;
+      }
       const btn = e.target.closest('[data-hview]');
       if (btn) {
         _historyView = btn.dataset.hview;
@@ -1962,13 +2232,62 @@ async function renderHistory() {
     return `<button class="btn-secondary${_historyView === v ? ' sel' : ''}" data-hview="${v}">${labels[v]}</button>`;
   }).join('');
 
+  // A5a: account selector — visible only in two-account mode
+  let accountSelectorHtml = '';
+  if (twoAccountMode()) {
+    const a1 = _cfg.account_1_name || 'Primary';
+    const a2 = _cfg.account_2_name.trim();
+    accountSelectorHtml = `<div class="account-selector">
+      ${[{v:'all',label:'All'},{v:a1,label:a1},{v:a2,label:a2}].map(({v,label}) =>
+        `<button class="btn-secondary${_historyAccount === v ? ' sel' : ''}" data-haccount="${v}">${label}</button>`
+      ).join('')}
+    </div>`;
+  }
+
   const header = `<div class="forecast-header"><h3>📅 your usage, over time.</h3></div>
   <div class="history-header-row">
     <div class="history-views">${viewBtns}</div>
+    ${accountSelectorHtml}
     <button class="btn-secondary" data-export-csv="1">↓ Export CSV</button>
   </div>`;
 
-  panel.innerHTML = `<div class="dashboard-content">${header}<div id="history-body"></div></div>`;
+  // A5c: combined-totals card — visible only in two-account mode
+  let combinedCardHtml = '';
+  if (twoAccountMode()) {
+    const allCache = await dbGetAll('monthly_cache');
+    const a1 = _cfg.account_1_name || 'Primary';
+    const a2 = _cfg.account_2_name.trim();
+    function sumCache(label) {
+      const rows = allCache.filter(r => r.account_label === label);
+      return { tokens: rows.reduce((s,r)=>s+r.total_tokens,0), sessions: rows.reduce((s,r)=>s+r.sessions,0) };
+    }
+    const s1 = sumCache(a1), s2 = sumCache(a2), sc = sumCache('combined');
+    // ponytail: combined-card sessions = sum of per-month session COUNTS, which double-counts a
+    // session spanning two months (same trade-off already baked into monthly_cache).
+    // Ceiling: cross-month inflation. Upgrade: count distinct session_ids from sessions store.
+    combinedCardHtml = `<div class="combined-card au">
+      <div class="combined-card-header">🔀 across both accounts</div>
+      <div class="combined-cols">
+        <div>
+          <div class="combined-col-label">${a1}</div>
+          <div class="combined-col-value"><span class="mono">${fmtTokens(s1.tokens)}</span> tokens</div>
+          <div class="combined-col-sub"><span class="mono">${s1.sessions}</span> sessions</div>
+        </div>
+        <div>
+          <div class="combined-col-label">${a2}</div>
+          <div class="combined-col-value"><span class="mono">${fmtTokens(s2.tokens)}</span> tokens</div>
+          <div class="combined-col-sub"><span class="mono">${s2.sessions}</span> sessions</div>
+        </div>
+        <div>
+          <div class="combined-col-label">Combined</div>
+          <div class="combined-col-value"><span class="mono">${fmtTokens(sc.tokens)}</span> tokens</div>
+          <div class="combined-col-sub"><span class="mono">${sc.sessions}</span> sessions</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  panel.innerHTML = `<div class="dashboard-content">${header}${combinedCardHtml}<div id="history-body"></div></div>`;
 
   // Render the active view
   if (_historyView === 'monthly')  await renderMonthlyView();
@@ -1983,15 +2302,24 @@ async function renderMonthlyView() {
   const el = document.getElementById('history-body');
   if (!el) return;
 
+  // A5b: map _historyAccount to cache label
+  const cacheLabel = _historyAccount === 'all' ? 'combined' : _historyAccount;
+  // ponytail: stale monthly cache flag shown as a note above the monthly cards.
+  // Trigger: recomputeMonthlyCache threw during last sync. Clears only on page reload.
+  // Upgrade: clear flag on successful recompute.
+  const staleHtml = _monthlyCacheStale
+    ? `<p style="font-size:12px;color:var(--amber);margin-bottom:12px">data may be stale — re-sync to refresh.</p>`
+    : '';
+
   const all = await dbGetAll('monthly_cache');
   const records = all
-    .filter(r => r.account_label === 'combined')
+    .filter(r => r.account_label === cacheLabel)
     .sort((a, b) => b.month_key > a.month_key ? 1 : -1) // newest-first
     .slice(0, 12);
 
   if (records.length === 0) {
     // ORIGINATED: all-empty state copy
-    el.innerHTML = `<div class="chart-empty">no monthly history yet</div>`;
+    el.innerHTML = staleHtml + `<div class="chart-empty">no monthly history yet</div>`;
     return;
   }
 
@@ -2055,7 +2383,7 @@ async function renderMonthlyView() {
     return Math.round(slice.reduce((s, v) => s + v, 0) / win);
   });
 
-  el.innerHTML = `<div class="month-grid">${cards}</div>
+  el.innerHTML = staleHtml + `<div class="month-grid">${cards}</div>
     <div class="card au">
       <div class="forecast-header"><h3>monthly comparison</h3><p>token totals by month</p></div>
       <div class="monthly-chart-wrap"><canvas id="canvas-monthly"></canvas></div>
@@ -2124,7 +2452,8 @@ async function renderWeeklyView() {
   const el = document.getElementById('history-body');
   if (!el) return;
 
-  const allTurns = await dbGetAll('turns');
+  // A5b: filter turns by selected account before computing weekly buckets
+  const allTurns = filterTurnsByAccount(await dbGetAll('turns'), _historyAccount);
   const buckets  = getWeeklyBuckets(allTurns, 12); // oldest-first
 
   // Table: newest-first = iterate in reverse
@@ -2215,12 +2544,12 @@ async function renderBillingView() {
   const el = document.getElementById('history-body');
   if (!el) return;
 
-  const allTurns = await dbGetAll('turns');
+  // A5b: filter turns by selected account before computing billing cycles
+  const allTurns = filterTurnsByAccount(await dbGetAll('turns'), _historyAccount);
   const bsd = Number(_cfg.billing_start) || 1;
   const cycles = getBillingCycles(allTurns, bsd, Date.now());
 
   if (allTurns.length === 0) {
-    // ORIGINATED: billing empty state
     el.innerHTML = `<div class="chart-empty">no billing history yet</div>`;
     return;
   }
@@ -2320,6 +2649,220 @@ async function renderBillingView() {
 }
 
 // ================================================================
+// PHASE 6 — TOAST / MODAL / RECONNECT / TIPS / WHATS-COMING
+// ================================================================
+
+// showToast: shows a single toast message (auto-dismissed after 3s).
+// ponytail: 3s auto-dismiss ORIGINATED — spec says "~3s". Single toast at a time.
+// Upgrade: queue multiple toasts if they ever need stacking.
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.innerHTML = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// promptAccount: returns a Promise<string> resolving to the chosen account label.
+// On dismiss (backdrop click / Esc / no choice) → defaults to Account 1 / Primary (A2).
+function promptAccount() {
+  return new Promise(resolve => {
+    // ORIGINATED: button labels use real configured names (defaults match dump's "Primary"/"Alt Account").
+    const a1 = _cfg.account_1_name || 'Primary';
+    const a2 = _cfg.account_2_name ? _cfg.account_2_name.trim() : 'Alt Account';
+    const modal    = document.getElementById('account-modal');
+    const backdrop = document.getElementById('account-backdrop');
+    if (!modal || !backdrop) { resolve(a1); return; }
+
+    function pick(label) {
+      backdrop.classList.remove('open');
+      modal.classList.remove('open');
+      backdrop.removeEventListener('click', dismiss);
+      document.removeEventListener('keydown', onKey);
+      resolve(label);
+    }
+    function dismiss() { pick(a1); }
+    function onKey(e) { if (e.key === 'Escape') dismiss(); }
+
+    document.getElementById('account-btn-1').textContent = a1;
+    document.getElementById('account-btn-2').textContent = a2;
+    document.getElementById('account-btn-1').onclick    = () => pick(a1);
+    document.getElementById('account-btn-2').onclick    = () => pick(a2);
+    document.getElementById('account-btn-combined').onclick = () => pick('combined');
+
+    backdrop.addEventListener('click', dismiss);
+    document.addEventListener('keydown', onKey);
+    backdrop.classList.add('open');
+    modal.classList.add('open');
+  });
+}
+
+// reconnectFolder: re-requests permission on the stored handle (no new picker).
+// If granted → run sync (with account prompt if two-account). (dump 5.3)
+async function reconnectFolder() {
+  const dh = await dbGet('kv','dirHandle');
+  if (!dh) { showScreen('connect'); return; }
+  let perm;
+  try { perm = await dh.requestPermission({ mode:'read' }); }
+  catch { perm = 'denied'; }
+  if (perm === 'granted') {
+    const label = twoAccountMode() ? await promptAccount() : undefined;
+    await runSync(dh, label);
+  }
+  // else: stay on reconnect — ORIGINATED: no-op, no error toast (permission still denied)
+}
+
+// skipReconnect: loads dashboard from IDB without re-parsing.
+async function skipReconnect() {
+  await renderDashboard();
+  showScreen('app');
+}
+
+// retrySync: hides sync-error and re-triggers sync via runResync.
+async function retrySync() {
+  document.getElementById('sync-error').style.display = 'none';
+  await runResync();
+}
+
+// switchToTab: switches to a named tab (equivalent to clicking the tab button).
+function switchToTab(name) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`);
+  if (btn) btn.click();
+}
+
+// ----------------------------------------------------------------
+// TIPS constant (ORIGINATED descriptions + code; titles/savings verbatim from dump §9).
+// Cards 2, 5, 6 copy_text reuses matching insight copy_text strings (spiral, opus_waste,
+// cache-warning respectively). All other descriptions ORIGINATED, lowercase tone (dump 4.7).
+// ----------------------------------------------------------------
+// ORIGINATED: descriptions and code snippets written below. Titles and saving badges are
+// verbatim from dump §9. Copy text for tips 2, 5, 6 reuses existing insight copy_text strings.
+const TIPS = [
+  {
+    tipNum: 1,
+    title: 'Tell Claude to talk less',
+    badge: '40–65% output',
+    body: "claude's default output is verbose. asking for shorter responses directly cuts output tokens by 40–65%, which is the most expensive part.",
+    code: 'Add to CLAUDE.md:\nBe concise. Short answers only unless I ask for detail.',
+  },
+  {
+    tipNum: 2,
+    title: 'Use /compact in long sessions',
+    badge: '40–70% input',
+    body: 'every message in a session re-reads the whole history. /compact summarises it, slashing input tokens for all future turns in that session.',
+    // reuses spiral insight copy_text (line 910)
+    code: 'Run /compact every 30–45 minutes in long sessions, or use /clear when switching to a new task.',
+  },
+  {
+    tipNum: 3,
+    title: 'Ask for diffs, not full files',
+    badge: '50–80% on edits',
+    body: 'asking claude to rewrite an entire file sends every line as output. asking only for the changed lines cuts output 50–80% on edits.',
+    code: 'Add to CLAUDE.md:\nFor edits, show only the diff — not the full file.',
+  },
+  {
+    tipNum: 4,
+    title: 'Add a .claudeignore',
+    badge: '20–60% input',
+    body: 'claude reads everything in your project folder by default. a .claudeignore file (same syntax as .gitignore) stops it reading node_modules, build output, and test fixtures.',
+    code: '# .claudeignore\nnode_modules/\ndist/\n.next/\ncoverage/',
+  },
+  {
+    tipNum: 5,
+    title: 'Use the right model',
+    badge: 'up to 80% on simple tasks',
+    body: 'opus handles hard problems. for quick edits, formatting, and simple q&a, haiku costs 15× less and works just as well.',
+    // reuses opus_waste insight copy_text (line 988)
+    code: 'Add to CLAUDE.md:\nUse Haiku for: quick edits, formatting, simple Q&A.\nUse Sonnet for: new code, refactors, multi-step tasks.\nUse Opus only when I explicitly ask.',
+  },
+  {
+    tipNum: 6,
+    title: 'Trim your CLAUDE.md',
+    badge: '5–15% all input',
+    body: 'every file claude reads is re-sent each turn. a shorter CLAUDE.md with stable rules at the top maximises cache hit rate.',
+    // reuses cache-warning insight copy_text (line 945)
+    code: 'Put stable rules at the top of CLAUDE.md (these get cached).\nPut session-specific notes at the bottom.',
+  },
+];
+
+// renderTips: renders the token-tips panel.
+async function renderTips() {
+  const panel = document.getElementById('panel-tips');
+  if (!panel) return;
+
+  const allTurns  = await dbGetAll('turns');
+  const now       = Date.now();
+  const badges    = tipPersonalization(allTurns, now);
+  const activeDays = new Set(allTurns.map(t => t.timestamp.substring(0, 10))).size;
+  const subtext   = activeDays >= 7
+    ? 'based on your actual patterns'
+    : `${7 - activeDays} more active ${7 - activeDays === 1 ? 'day' : 'days'} to personalise tips`;
+
+  // Store copy texts in a window var to avoid HTML-attribute escaping of newlines.
+  window._tipCopies = TIPS.map(t => t.code);
+
+  const cards = TIPS.map((tip, i) => {
+    const badgeText = badges[tip.tipNum] || tip.badge;
+    return `<div class="tip-card au" style="animation-delay:${i * 60}ms">
+      <div class="tip-card-header">
+        <span class="tip-title">${tip.title}</span>
+        <span class="tip-badge">${badgeText}</span>
+      </div>
+      <div class="tip-body">${tip.body}</div>
+      <div class="tip-code">${tip.code}</div>
+      <div class="tip-copy-row">
+        <button class="btn-copy" onclick="copyText(this, _tipCopies[${i}])">copy</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  panel.innerHTML = `<div class="tips-panel">
+    <div class="forecast-header"><h3>💬 token tips</h3><p>${subtext}</p></div>
+    ${cards}
+  </div>`;
+}
+
+// renderWhatsComing: static "what's coming" panel. NO network calls. (dump §11)
+// ORIGINATED: minimal teaser copy and feature pills for planned browser extension.
+// ponytail: animations are CSS-only; GSAP never added; reduced-motion honored via B7 block.
+// ponytail: no waitlist backend; email submit is a local no-op/thanks. Upgrade: POST when an endpoint exists.
+function renderWhatsComing() {
+  const panel = document.getElementById('panel-whats-coming');
+  if (!panel || panel.dataset.rendered) return; // build once
+  panel.dataset.rendered = '1';
+
+  panel.innerHTML = `<div class="wc-panel">
+    <div class="wc-hero au">
+      <div class="wc-icon">🌐</div>
+      <h2 class="wc-headline">coming soon: web session tracking</h2>
+      <p class="wc-sub">burnboard tracks claude code usage. but if you also use claude.ai in the browser, that data is completely invisible — until now.</p>
+      <div class="wc-pills">
+        <span class="wc-pill">tracks claude.ai web sessions</span>
+        <span class="wc-pill">combines web + cli usage</span>
+        <span class="wc-pill">no install required</span>
+      </div>
+      <p style="font-size:13px;color:var(--mu);margin-bottom:16px">want early access? drop your email.</p>
+      <div class="wc-email-row">
+        <input class="wc-email-input" type="email" id="wc-email" placeholder="you@example.com">
+        <button class="btn-secondary" onclick="wcSubmit()">notify me</button>
+      </div>
+      <p class="wc-email-thanks" id="wc-thanks">you're on the list!</p>
+    </div>
+  </div>`;
+}
+
+// wcSubmit: local-only email capture submit (NO network call).
+function wcSubmit() {
+  const inp = document.getElementById('wc-email');
+  if (!inp || !inp.value.trim()) return;
+  inp.style.display = 'none';
+  inp.closest('.wc-email-row').querySelector('button').style.display = 'none';
+  const thanks = document.getElementById('wc-thanks');
+  if (thanks) thanks.style.display = '';
+}
+
+// ================================================================
 // RENDER
 // ================================================================
 async function renderDashboard() {
@@ -2333,6 +2876,7 @@ async function renderDashboard() {
     renderStartCheck(d) + renderMiniStats(d) + renderInsights(d) + renderForecast(d) +
     renderFilterBar() + renderChartsShell() + renderSessionsShell() + renderCostShell();
 
+  setFavicon(_lastCheckState); // B5: favicon reflects current Start Check state
   await renderFilteredSections();
 }
 
@@ -2360,6 +2904,7 @@ function renderStartCheck(d) {
     else      state = (opusPct > 70 || sonnetPct > 75) ? 'caution_budget' : 'good';
   }
 
+  _lastCheckState = state; // stash for setFavicon in renderDashboard
   const col = stateColor(state);
   const dotColor = col === 'muted' ? 'var(--mu)' : `var(--${col})`;
 
@@ -2497,7 +3042,8 @@ function renderForecast(d) {
 // ================================================================
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById({ connect:'connect-screen', sync:'sync-screen', app:'app-screen' }[name]).classList.add('active');
+  const map = { connect:'connect-screen', sync:'sync-screen', app:'app-screen', reconnect:'reconnect-screen' };
+  document.getElementById(map[name]).classList.add('active');
 }
 
 function setStatus(msg) { document.getElementById('sync-status').textContent = msg; }
@@ -2522,7 +3068,10 @@ document.getElementById('tab-bar').addEventListener('click', e => {
   // Phase 4 integration: render history on tab switch (fire-and-forget).
   // ponytail: re-renders on every history-tab click (cheap; reads cache + turns).
   // Upgrade = cache rendered DOM if it ever feels slow.
-  if (btn.dataset.tab === 'history') renderHistory();
+  if (btn.dataset.tab === 'history')     renderHistory();
+  // Phase 6: tips + whats-coming tabs rendered on first click (fire-and-forget).
+  if (btn.dataset.tab === 'tips')        renderTips();
+  if (btn.dataset.tab === 'whats-coming') renderWhatsComing();
 });
 
 // Filter bar — delegated handler (mirrors tab-bar pattern, dump 7.4)
@@ -2615,7 +3164,8 @@ async function wipeData() {
 async function runResync() {
   const dh = await dbGet('kv','dirHandle');
   if (!dh) { showScreen('connect'); return; }
-  await runSync(dh);
+  const label = twoAccountMode() ? await promptAccount() : undefined;
+  await runSync(dh, label);
 }
 
 // ================================================================
@@ -2625,7 +3175,8 @@ async function pickFolder() {
   try {
     const dh = await window.showDirectoryPicker({ mode:'read' });
     await dbPut('kv', dh, 'dirHandle');
-    await runSync(dh);
+    const label = twoAccountMode() ? await promptAccount() : undefined;
+    await runSync(dh, label);
   } catch (e) {
     if (e.name === 'AbortError') return; // user cancelled — stay on Connect (dump 18)
     console.error('[BurnBoard] pickFolder:', e);
@@ -2643,6 +3194,12 @@ async function pickFolder() {
   if (!window.showDirectoryPicker) {
     document.getElementById('connect-btn').disabled = true;
     document.getElementById('compat-warning').classList.add('visible');
+    // B6.1: if turns exist in IDB, show skip link so Firefox/Safari users can see last data
+    const existingTurns = await dbGetAll('turns').catch(() => []);
+    if (existingTurns.length > 0) {
+      const skipWrap = document.getElementById('connect-skip-wrap');
+      if (skipWrap) skipWrap.style.display = '';
+    }
   }
 
   const dh = await dbGet('kv','dirHandle');
@@ -2655,9 +3212,8 @@ async function pickFolder() {
   if (perm === 'granted') {
     await runSync(dh);
   } else {
-    // ponytail: Phase 6 Reconnect screen handles this branch with a prompt-to-re-grant flow;
-    // Phase 1 falls back to Connect so user can re-pick the folder.
-    showScreen('connect');
+    // RESOLVED Phase 6: permission revoked → show Reconnect screen (not Connect).
+    showScreen('reconnect');
   }
 })();
 </script>

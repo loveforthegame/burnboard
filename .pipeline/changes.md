@@ -1,38 +1,100 @@
-# Phase 4 Changes
+# changes — phase 5+6 (two-account tracking + tips/polish)
 
-## Files changed
+## files changed
 
-### `burnboard.html`
-- **CSS**: Added `/* Phase 4 — History (dump 8, 8.1-8.4) */` block with `.history-header-row`, `.history-views`, `.month-grid`, `.month-card`, `.month-delta-up/down`, `.history-table`, `.sparkline-wrap`, `.monthly-chart-wrap`, `.cycle-card`, and related helpers.
-- **runSync** (wiring point 1): Added `try { await recomputeMonthlyCache(); } catch (e) { ... }` after windows write, before `renderDashboard`. Does not block sync on failure.
-- **tab-bar handler** (wiring point 2): Added `if (btn.dataset.tab === 'history') renderHistory();` fire-and-forget call on tab switch.
-- **New functions** (all additive, Phase 4 only):
-  - `aggregateMonths(turns)` — pure, IDB-free. Groups turns by month_key, computes totals, top_model.
-  - `recomputeMonthlyCache()` — async wrapper; reads all turns, calls aggregateMonths, writes under `account_label:'combined'`.
-  - `getWeeklyBuckets(turns, n, now)` — pure. Returns n Mon–Sun UTC buckets, oldest-first. Reuses getMondayUTC.
-  - `getBillingCycles(turns, billingStartDay, now)` — pure. Returns current + 3 prior billing cycles using `_cfg.billing_start`.
-  - `buildCsvRows(records)` — pure. Returns full CSV string with exact spec columns.
-  - `exportHistoryCsv()` — async. Reads monthly_cache, calls buildCsvRows, downloads via Blob+URL.createObjectURL.
-  - `renderHistory()` — top-level. Binds delegated listener once, renders header + active view.
-  - `renderMonthlyView()` — 12-card grid + comparison bar chart with rolling-average overlay.
-  - `renderWeeklyView()` — 12-week table (newest-first) + sparkline (oldest-left).
-  - `renderBillingView()` — current-cycle card + last-3-cycles table.
+### burnboard.html
+All changes are additive. Phase 1-4 code untouched except wiring points.
 
-### `burnboard.test.js`
-- Added 28 new tests (220 total, all pass). Four sections added:
-  - `getWeeklyBuckets` — bucket assignment, boundary (Monday 00:00 UTC), empty input, token aggregation.
-  - `aggregateMonths` — multi-month, sessions, active_days, top_model, tie-break.
-  - `getBillingCycles` — billing_start=1 and 15, day_index, days_in_cycle, turn assignment.
-  - `buildCsvRows` — header, empty, column order, cache_reads mapping, multi-row.
+**CSS (before `</style>`):**
+- Added `@media (prefers-reduced-motion)` global override block
+- Added `#toast` + `#toast.show` styles
+- Added `.modal-center` + `.modal-center.open` account prompt modal styles
+- Added reconnect screen styles (`.reconnect-box`, `.reconnect-headline`, etc.)
+- Added tips tab styles (`.tip-card`, `.tip-badge`, `.tip-body`, `.tip-code`, `.tip-copy-row`)
+- Added what's-coming tab styles (`.wc-panel`, `.wc-hero`, `.wc-pills`, `.wc-email-*`)
+- Added `#sync-error` display:none baseline
+- Added account selector + combined card styles
 
-## Riskiest / least-obvious parts for the tester
+**HTML:**
+- Added `<link rel="icon" id="favicon">` in `<head>`
+- Added `#connect-skip-wrap` div (hidden; shown when FSAPI unavailable + turns in IDB)
+- Added connect hint `<p>` about re-syncing rebuilding history
+- Added `#sync-error` div with retry button on sync screen
+- Added `#reconnect-screen` (full screen; RESOLVED Phase 1 ponytail)
+- Added `#toast` div
+- Added `#account-backdrop` + `#account-modal` for account prompt
+- Changed tips tab button `onclick` from inert to `switchToTab('tips')` (RESOLVED Phase 1 ponytail)
 
-1. **`recomputeMonthlyCache` try/catch in runSync** — if the recompute throws, sync and dashboard must still complete normally. The try/catch wraps only the recompute call; check that `renderDashboard` and `showScreen('app')` run even if recompute errors.
+**JS - new module-level state:**
+- `_historyAccount = 'all'`
+- `_monthlyCacheStale = false`
+- `_lastCheckState = 'no_data'`
 
-2. **`getBillingCycles` when `now` < `billingStartDay`** — the current cycle started in the prior month. The month-rollback logic (`curMonth--; if < 0 wrap`) must be correct. Test with billing_start=15, now on the 10th of a month.
+**JS - new pure helpers (before `exportHistoryCsv`):**
+- `twoAccountMode()` - returns bool; gates all two-account UI
+- `filterTurnsByAccount(turns, label)` - PURE; `'all'` returns everything, else exact-match
+- `countMalformed(lines)` - PURE test seam for `skippedLines` predicate
+- `faviconColorForState(state)` - PURE; returns hex color for 6 states
+- `setFavicon(state)` - sets `<link id="favicon">` to SVG data-URI dot
+- `tipPersonalization(turns, now)` - PURE; keys 1-6; gates on >=7 active days; personalises tips 1, 2, 5
 
-3. **`getWeeklyBuckets` string-comparison timestamp bounds** — uses `ts < startIso || ts >= endIso` (ISO string lexicographic compare) rather than Date.getTime(). This is correct for ISO 8601 strings with UTC Z suffix (same byte-order) but would break for non-UTC formats. All timestamps in the app are stored as UTC ISO strings from `new Date().toISOString()`, so this is safe — but worth verifying on real sync data.
+**JS - new functions (before RENDER section):**
+- `showToast(msg)` - 3s auto-dismiss single toast
+- `promptAccount()` - Promise<string> modal; dismiss resolves to Account-1 label
+- `reconnectFolder()` - re-requests permission on stored handle; runs sync on grant
+- `skipReconnect()` - loads dashboard from IDB without re-parsing
+- `retrySync()` - clears sync-error, calls `runResync()`
+- `switchToTab(name)` - clicks the named tab button
+- `TIPS` constant - 6 tip cards with titles/badges/body/code/ponytails
+- `renderTips()` - async; populates `#panel-tips`
+- `renderWhatsComing()` - static; populates `#panel-whats-coming` once (cached via `data-rendered`)
+- `wcSubmit()` - local-only email capture submit; no network call
 
-4. **Chart destroy-before-recreate on view switches** — `_monthlyChart` and `_weeklyChart` module vars must be destroyed before `new Chart(...)` on every renderMonthlyView/renderWeeklyView call. Repeated history tab clicks should not throw "Canvas is already in use".
+**JS - wiring edits:**
+- `runSync`: added `accountLabelArg` param; try/catch wrapper; dedup-relabel ponytail; toast calls; `_monthlyCacheStale = true` in monthly cache catch
+- `recomputeMonthlyCache`: RESOLVED Phase 4 ponytail; now loops real labels in two-account mode
+- `renderStartCheck`: stashes `_lastCheckState = state`
+- `renderDashboard`: calls `setFavicon(_lastCheckState)` after innerHTML
+- `showScreen`: added `reconnect:'reconnect-screen'` to map
+- Tab listener: added `renderTips()` and `renderWhatsComing()` on tab switch
+- `pickFolder`: calls `promptAccount()` before `runSync` when `twoAccountMode()`
+- `runResync`: calls `promptAccount()` before `runSync` when `twoAccountMode()`
+- `renderHistory`: now `async`; added account selector pills; added combined-totals card
+- `renderMonthlyView`: filters by `_historyAccount` -> cache label; shows stale note
+- `renderWeeklyView`: filters turns with `filterTurnsByAccount` before `getWeeklyBuckets`
+- `renderBillingView`: filters turns with `filterTurnsByAccount` before `getBillingCycles`
+- `exportHistoryCsv`: exports cache rows for selected account
+- `boot()`: RESOLVED Phase 1 ponytail; permission revoked -> `showScreen('reconnect')`; FSAPI unavailable + turns exist -> shows skip link
 
-5. **Delegated listener bound once** — `_historyBound` flag ensures the click listener on `#panel-history` is only attached once despite `renderHistory` being called on every tab switch. Verify no double-firing on second history tab click.
+**JS - self-check IIFE (SC17-SC26):**
+- Added assertions for all 6 `faviconColorForState` states
+- Added `twoAccountMode` assertions (empty/whitespace/non-empty)
+- Added `tipPersonalization` empty-turns assertion
+
+### burnboard.test.js
+Added ~130 lines of new test sections (all before the summary):
+- `twoAccountMode` - 4 tests
+- `filterTurnsByAccount` - 5 tests
+- per-account monthly aggregation - 3 tests
+- `countMalformed` - 4 tests
+- `faviconColorForState` - 7 tests (all 6 states + unknown default)
+- `tipPersonalization` - 6 tests
+- Added Phase 5+6 notes to CANNOT-VERIFY section (items 17-20)
+
+Total tests: 267 (was 238; +29)
+
+## what the tester should focus on
+
+**Riskiest parts:**
+
+1. `renderHistory` is now `async` and calls `dbGetAll` for the combined card. Combined card HTML depends on `_cfg.account_2_name.trim()` being non-empty. Test: enable account_2_name in settings and switch to history tab.
+
+2. `runSync` try/catch wrapper - catch block loads IDB turns and auto-navigates to app if any exist. Confirm the `sync-error` div reappears on manual error injection. Confirm toast priority: skipped-lines > all-caught-up.
+
+3. `recomputeMonthlyCache` label loop - in two-account mode writes 3 sets of cache rows. Verify that selecting "Alt" in the history account selector shows only rows with `account_label === 'Alt'` in monthly view.
+
+4. `tipPersonalization` 7-day gate - uses UTC date strings (`timestamp.substring(0,10)`). Watch for timezone edge cases in browser.
+
+5. `promptAccount()` dismiss path - backdrop click and Esc key both resolve to Account-1 label. Event listeners are cleaned up; verify no leak if user opens/dismisses multiple times.
+
+6. `faviconColorForState` wiring - `_lastCheckState` set in `renderStartCheck` (sync, inside `renderDashboard`). `setFavicon` reads it after `innerHTML`. Order-sensitive: correct but fragile if renderStartCheck is ever made async.

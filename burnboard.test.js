@@ -2444,9 +2444,293 @@ test('buildCsvRows: no trailing newline after last row', () => {
 });
 
 // ================================================================
+// Phase 5+6 — PURE function tests (no IDB, no DOM)
+// ================================================================
+
+// ----------------------------------------------------------------
+// twoAccountMode — extracted as inline for Node (closure over _cfg)
+// Uses the existing _cfg const (property mutation is fine on const).
+// ----------------------------------------------------------------
+function twoAccountMode() {
+  return !!(_cfg && _cfg.account_2_name && _cfg.account_2_name.trim());
+}
+
+console.log('\ntwoAccountMode');
+test('false when account_2_name is empty string', () => {
+  _cfg.account_2_name = '';
+  eq(twoAccountMode(), false);
+});
+test('false when account_2_name is whitespace only', () => {
+  _cfg.account_2_name = '   ';
+  eq(twoAccountMode(), false);
+});
+test('true when account_2_name has content', () => {
+  _cfg.account_2_name = 'Alt';
+  eq(twoAccountMode(), true);
+});
+test('true when account_2_name has leading/trailing spaces but has chars', () => {
+  _cfg.account_2_name = ' Work ';
+  eq(twoAccountMode(), true);
+});
+_cfg.account_2_name = ''; // reset to single-account mode
+
+// ----------------------------------------------------------------
+// filterTurnsByAccount
+// ----------------------------------------------------------------
+function filterTurnsByAccount(turns, label) {
+  if (label === 'all') return turns;
+  return turns.filter(t => t.account_label === label);
+}
+
+console.log('\nfilterTurnsByAccount');
+test("label 'all' returns all turns regardless of account_label", () => {
+  const turns = [
+    turn({ account_label: 'Primary' }),
+    turn({ account_label: 'Alt' }),
+    turn({ account_label: 'combined' }),
+  ];
+  eq(filterTurnsByAccount(turns, 'all').length, 3);
+});
+test("exact-match 'Primary' returns only Primary turns", () => {
+  const turns = [
+    turn({ account_label: 'Primary' }),
+    turn({ account_label: 'Alt' }),
+    turn({ account_label: 'Primary' }),
+  ];
+  eq(filterTurnsByAccount(turns, 'Primary').length, 2);
+});
+test("exact-match 'Alt' returns only Alt turns", () => {
+  const turns = [
+    turn({ account_label: 'Primary' }),
+    turn({ account_label: 'Alt' }),
+  ];
+  eq(filterTurnsByAccount(turns, 'Alt').length, 1);
+});
+test("'combined' does NOT match Primary or Alt (exact-match only)", () => {
+  const turns = [
+    turn({ account_label: 'Primary' }),
+    turn({ account_label: 'Alt' }),
+  ];
+  eq(filterTurnsByAccount(turns, 'combined').length, 0);
+});
+test('empty array returns empty array for any label', () => {
+  eq(filterTurnsByAccount([], 'Primary').length, 0);
+  eq(filterTurnsByAccount([], 'all').length, 0);
+});
+
+// ----------------------------------------------------------------
+// Per-account monthly aggregation (via aggregateMonths)
+// Verifies that filterTurnsByAccount + aggregateMonths gives
+// per-account totals correctly.
+// ----------------------------------------------------------------
+
+// aggregateMonths already defined above (Phase 4 section). Reuses it here.
+console.log('\nper-account monthly aggregation');
+test('account 1 totals are isolated from account 2', () => {
+  const a1 = turn({ account_label: 'Primary', input_tokens: 1000, output_tokens: 500, month_key: '2026-06' });
+  const a2 = turn({ account_label: 'Alt',     input_tokens:  200, output_tokens: 100, month_key: '2026-06' });
+  const [r] = aggregateMonths(filterTurnsByAccount([a1, a2], 'Primary'));
+  eq(r.input_tokens,  1000);
+  eq(r.output_tokens,  500);
+});
+test('account 2 totals are isolated from account 1', () => {
+  const a1 = turn({ account_label: 'Primary', input_tokens: 1000, output_tokens: 500, month_key: '2026-06' });
+  const a2 = turn({ account_label: 'Alt',     input_tokens:  200, output_tokens: 100, month_key: '2026-06' });
+  const [r] = aggregateMonths(filterTurnsByAccount([a1, a2], 'Alt'));
+  eq(r.input_tokens,  200);
+  eq(r.output_tokens, 100);
+});
+test("'all' label includes combined-tagged turns", () => {
+  const a1 = turn({ account_label: 'Primary',  input_tokens: 1000, month_key: '2026-06' });
+  const ac = turn({ account_label: 'combined', input_tokens:  100, month_key: '2026-06' });
+  const [r] = aggregateMonths(filterTurnsByAccount([a1, ac], 'all'));
+  eq(r.input_tokens, 1100);
+});
+
+// ----------------------------------------------------------------
+// countMalformed
+// ----------------------------------------------------------------
+function countMalformed(lines) {
+  let count = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try { JSON.parse(line); } catch { count++; }
+  }
+  return count;
+}
+
+console.log('\ncountMalformed');
+test('all valid JSON lines → 0', () => {
+  eq(countMalformed(['{"a":1}', '{"b":2}']), 0);
+});
+test('one malformed line → 1', () => {
+  eq(countMalformed(['{"a":1}', 'not json']), 1);
+});
+test('empty/blank lines are skipped (not counted as malformed)', () => {
+  eq(countMalformed(['', '   ', '{"a":1}']), 0);
+});
+test('all malformed → count equals non-empty line count', () => {
+  eq(countMalformed(['bad1', 'bad2', 'bad3']), 3);
+});
+
+// ----------------------------------------------------------------
+// faviconColorForState
+// ----------------------------------------------------------------
+function faviconColorForState(state) {
+  return { good:'#34D399', weekend:'#34D399', caution_peak:'#FBBF24',
+           caution_budget:'#FBBF24', danger:'#F87171', no_data:'#6B6460' }[state] || '#6B6460';
+}
+
+console.log('\nfaviconColorForState');
+test("'good' → green #34D399",             () => eq(faviconColorForState('good'),           '#34D399'));
+test("'weekend' → green #34D399",          () => eq(faviconColorForState('weekend'),        '#34D399'));
+test("'caution_peak' → amber #FBBF24",     () => eq(faviconColorForState('caution_peak'),   '#FBBF24'));
+test("'caution_budget' → amber #FBBF24",   () => eq(faviconColorForState('caution_budget'), '#FBBF24'));
+test("'danger' → red #F87171",             () => eq(faviconColorForState('danger'),         '#F87171'));
+test("'no_data' → muted #6B6460",          () => eq(faviconColorForState('no_data'),        '#6B6460'));
+test('unknown state → muted #6B6460 (default)', () => eq(faviconColorForState('unknown'),   '#6B6460'));
+
+// ----------------------------------------------------------------
+// tipPersonalization
+// ----------------------------------------------------------------
+// Needs modelFamily (already defined above)
+function tipPersonalization(turns, now) {
+  const generic = { 1:null, 2:null, 3:null, 4:null, 5:null, 6:null };
+  const activeDays = new Set(turns.map(t => t.timestamp.substring(0, 10)));
+  if (activeDays.size < 7) return generic;
+
+  const last7 = now - 7 * 86400000;
+  const recent = turns.filter(t => new Date(t.timestamp).getTime() >= last7);
+
+  let totalIn = 0, totalOut = 0;
+  for (const t of recent) { totalIn += t.input_tokens; totalOut += t.output_tokens; }
+  const ratio = totalIn > 0 ? totalOut / totalIn : 0;
+  const tip1 = ratio > 2.0 ? `your data: output ratio is ${ratio.toFixed(1)}×` : null;
+
+  const sessMap = {};
+  for (const t of recent) {
+    if (!sessMap[t.session_id]) sessMap[t.session_id] = [];
+    sessMap[t.session_id].push(t);
+  }
+  let spiralCount = 0;
+  for (const ts of Object.values(sessMap)) {
+    if (ts.length <= 5) continue;
+    const sorted = [...ts].sort((a, b) => a.timestamp < b.timestamp ? -1 : 1);
+    const toks = sorted.map(t => t.input_tokens + t.output_tokens);
+    const early = toks.slice(0, 3);
+    const late  = toks.slice(2);
+    const avgE = early.reduce((s, v) => s + v, 0) / early.length;
+    if (avgE <= 0) continue;
+    const avgL = late.reduce((s, v) => s + v, 0) / late.length;
+    if (avgL / avgE > 3.0) spiralCount++;
+  }
+  const tip2 = spiralCount >= 3 ? `your data: ${spiralCount} sessions spiraled this week` : null;
+
+  let opusWaste = 0;
+  for (const ts of Object.values(sessMap)) {
+    if (ts.length >= 4) continue;
+    const vol = { opus:0, sonnet:0, haiku:0, other:0 };
+    for (const t of ts) vol[modelFamily(t.model)] += t.input_tokens + t.output_tokens;
+    if (Object.entries(vol).sort((a, b) => b[1] - a[1])[0][0] === 'opus') opusWaste++;
+  }
+  const tip5 = opusWaste >= 5 ? `your data: ${opusWaste} short opus sessions` : null;
+
+  return { 1:tip1, 2:tip2, 3:null, 4:null, 5:tip5, 6:null };
+}
+
+// Helper: build N turns spread over N distinct UTC days (within the last 7d window)
+function makeTurns(n, overrides = {}) {
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  return Array.from({ length: n }, (_, i) => ({
+    session_id: `sess-${i}`,
+    timestamp: new Date(now - i * 86400000).toISOString(),
+    model: 'claude-sonnet-3-7',
+    input_tokens: 1000,
+    output_tokens: 500,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    account_label: 'Primary',
+    month_key: '2026-06',
+    ...overrides,
+  }));
+}
+
+console.log('\ntipPersonalization');
+test('empty turns → all null (generic)', () => {
+  const r = tipPersonalization([], Date.now());
+  eq(Object.values(r).every(v => v === null), true);
+});
+test('fewer than 7 active days → all null (gate not met)', () => {
+  const turns = makeTurns(6); // 6 distinct days
+  const r = tipPersonalization(turns, new Date('2026-06-28T12:00:00Z').getTime());
+  eq(Object.values(r).every(v => v === null), true);
+});
+test('tips 3/4/6 are always null (no data signal available)', () => {
+  const turns = makeTurns(10);
+  const r = tipPersonalization(turns, new Date('2026-06-28T12:00:00Z').getTime());
+  eq(r[3], null);
+  eq(r[4], null);
+  eq(r[6], null);
+});
+test('tip 1 fires when output/input ratio > 2.0 (last 7d, ≥7 active days)', () => {
+  // 10 turns, 24h apart from 12:00 UTC → 10 distinct UTC days (gate met).
+  // Last 8 are within 7d window; ratio = output/input = 3000/1000 = 3.0 → tip1 fires.
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  const turns = Array.from({ length: 10 }, (_, i) => ({
+    session_id: `sess-${i}`,
+    timestamp: new Date(now - i * 86400000).toISOString(), // 24h apart → distinct days
+    model: 'claude-sonnet-3-7',
+    input_tokens:  1000,
+    output_tokens: 3000, // ratio = 3.0
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    account_label: 'Primary',
+    month_key: '2026-06',
+  }));
+  const r = tipPersonalization(turns, now);
+  eq(r[1] !== null, true);
+  eq(r[1].includes('3.0'), true);
+});
+test('tip 1 is null when ratio ≤ 2.0', () => {
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  const turns = Array.from({ length: 10 }, (_, i) => ({
+    session_id: `sess-${i}`,
+    timestamp: new Date(now - i * 86400000).toISOString(), // 24h apart → distinct days
+    model: 'claude-sonnet-3-7',
+    input_tokens:  1000,
+    output_tokens: 1000, // ratio = 1.0
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    account_label: 'Primary',
+    month_key: '2026-06',
+  }));
+  const r = tipPersonalization(turns, now);
+  eq(r[1], null);
+});
+test('tip 5 fires when ≥5 short opus sessions (< 4 turns, opus-dominant)', () => {
+  // 10 single-turn opus sessions, 24h apart → 10 distinct days (gate met).
+  // 8 of them are within the 7d recent window → 8 short-opus sessions → ≥5 → tip5 fires.
+  const now = new Date('2026-06-28T12:00:00Z').getTime();
+  const turns = Array.from({ length: 10 }, (_, i) => ({
+    session_id: `opus-sess-${i}`, // each is its own 1-turn session
+    timestamp: new Date(now - i * 86400000).toISOString(), // 24h apart → distinct days
+    model: 'claude-opus-4-5',
+    input_tokens:  500,
+    output_tokens: 200,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    account_label: 'Primary',
+    month_key: '2026-06',
+  }));
+  const r = tipPersonalization(turns, now);
+  eq(r[5] !== null, true);
+  eq(r[5].includes('short opus sessions'), true);
+});
+
+// ================================================================
 // CANNOT-VERIFY-HEADLESS: Phase 4 DOM/async wiring confirmed by static inspection
-// 11. recomputeMonthlyCache try/catch in runSync — burnboard.html:~762 wraps the call
-//     in try { await recomputeMonthlyCache(); } catch (e) { console.error(...) }.
+// 11. recomputeMonthlyCache try/catch in runSync — burnboard.html now wraps the call
+//     in try { await recomputeMonthlyCache(); } catch (e) { ...; _monthlyCacheStale = true }.
 //     The catch does not re-throw, so renderDashboard() and showScreen('app') still
 //     run even if recompute throws. Confirmed by source inspection — cannot exercise
 //     IDB paths under Node.
@@ -2456,13 +2740,25 @@ test('buildCsvRows: no trailing newline after last row', () => {
 // 13. _historyBound flag prevents double-binding — renderHistory() checks _historyBound
 //     before attaching the delegated listener; sets it to true after first attach.
 //     Confirmed by module-level `let _historyBound = false` and guard in renderHistory.
-// 14. account dropdown omitted — no [Account: All ▾] control rendered in renderHistory().
-//     Phase 5 scope. Confirmed by absence of account dropdown HTML in renderHistory body.
+// 14. Phase 5: account selector pills rendered — renderHistory() now renders
+//     account-selector div with 3 pills (All, acct1, acct2) when twoAccountMode().
+//     Confirmed by source inspection of renderHistory().
 // 15. CSV download via Blob+createObjectURL+<a download> — exportHistoryCsv() creates
 //     Blob([csv], {type:'text/csv'}), URL.createObjectURL, temporary <a> with download
 //     attr, .click(), URL.revokeObjectURL. Confirmed by source inspection.
 // 16. _cfg.billing_start used (not billing_start_day) — getBillingCycles reads
 //     `Number(_cfg.billing_start) || 1` per RESOLVED spec note. Confirmed by grep.
+// 17. Phase 5: recomputeMonthlyCache loops real labels — in twoAccountMode loops
+//     [acct1, acct2, 'combined']; else ['combined']. RESOLVED Phase 4 ponytail.
+//     Confirmed by source inspection — cannot exercise IDB under Node.
+// 18. Phase 6: toast shown post-sync — runSync calls showToast('all caught up ✓')
+//     when totalTurns===0, or showToast('skipped N malformed lines') when skippedLines>0.
+//     Skipped-lines takes priority. Cannot exercise DOM showToast under Node.
+// 19. Phase 6: favicon updated in renderDashboard — setFavicon(_lastCheckState) is called
+//     after dashboard innerHTML assignment. _lastCheckState is set by renderStartCheck.
+//     Confirmed by source inspection — cannot exercise DOM+IDB path under Node.
+// 20. Phase 6: boot() shows reconnect screen when permission revoked — perm !== 'granted'
+//     now calls showScreen('reconnect') instead of showScreen('connect'). Confirmed.
 // ================================================================
 
 // ================================================================
