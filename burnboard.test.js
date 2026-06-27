@@ -528,6 +528,247 @@ test('on_track remaining = round(100 - projOpusPct), clamped >= 0', () => {
 });
 
 // ================================================================
+// Phase 2 — loadFilteredData() logic (pure, extracted for Node testing)
+// Riskiest: range cutoff, model filter, day bucketing, top-8 slice, days_with_data
+// ================================================================
+console.log('\nPhase 2 — filter + aggregation');
+
+// Pure re-implementation of loadFilteredData() logic, extracted from burnboard.html
+// (IDB call swapped for a turns array passed in; _filter passed as argument)
+function computeFilteredData(turns, filter) {
+  const now = Date.now();
+  let cutoff = 0;
+  if      (filter.range === '7d')  cutoff = now - 7  * 86400000;
+  else if (filter.range === '30d') cutoff = now - 30 * 86400000;
+  else if (filter.range === '90d') cutoff = now - 90 * 86400000;
+
+  let filtered = turns;
+  if (cutoff > 0) {
+    filtered = filtered.filter(t => new Date(t.timestamp).getTime() >= cutoff);
+  }
+  if (filter.model !== 'all') {
+    filtered = filtered.filter(t => modelFamily(t.model) === filter.model);
+  }
+
+  // daily_usage
+  const dailyMap = {};
+  for (const t of filtered) {
+    const day = t.timestamp.substring(0, 10);
+    if (!dailyMap[day]) dailyMap[day] = { day, total_tokens: 0, sessions: new Set() };
+    dailyMap[day].total_tokens += t.input_tokens + t.output_tokens;
+    dailyMap[day].sessions.add(t.session_id);
+  }
+  const daily_usage = Object.values(dailyMap)
+    .map(d => ({ day: d.day, total_tokens: d.total_tokens, sessions: d.sessions.size }))
+    .sort((a, b) => a.day < b.day ? -1 : 1);
+
+  // heatmap
+  const hmMap = {};
+  for (const t of filtered) {
+    const dt  = new Date(t.timestamp);
+    const dow = dt.getUTCDay();
+    const hr  = dt.getUTCHours();
+    const key = `${dow}-${hr}`;
+    if (!hmMap[key]) hmMap[key] = { day_of_week: dow, hour_utc: hr, tokens: 0 };
+    hmMap[key].tokens += t.input_tokens + t.output_tokens;
+  }
+  const heatmap = Object.values(hmMap);
+
+  // model_breakdown
+  const familyTok = { opus: 0, sonnet: 0, haiku: 0, unknown: 0 };
+  for (const t of filtered) {
+    const fam = modelFamily(t.model);
+    const key = fam === 'other' ? 'unknown' : fam;
+    familyTok[key] += t.input_tokens + t.output_tokens;
+  }
+  const totalTok = familyTok.opus + familyTok.sonnet + familyTok.haiku + familyTok.unknown;
+  const model_breakdown = ['opus', 'sonnet', 'haiku', 'unknown']
+    .filter(f => familyTok[f] > 0)
+    .map(f => ({
+      model_family: f,
+      tokens: familyTok[f],
+      pct: totalTok > 0 ? Math.round(familyTok[f] / totalTok * 100) : 0,
+    }));
+
+  // top_projects
+  const projMap = {};
+  for (const t of filtered) {
+    const name = (t.cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'unknown';
+    if (!projMap[name]) projMap[name] = { project_name: name, tokens: 0, sessions: new Set() };
+    projMap[name].tokens += t.input_tokens + t.output_tokens;
+    projMap[name].sessions.add(t.session_id);
+  }
+  const top_projects = Object.values(projMap)
+    .map(p => ({ project_name: p.project_name, tokens: p.tokens, sessions: p.sessions.size }))
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 8);
+
+  const days_with_data = daily_usage.length;
+
+  return { daily_usage, heatmap, model_breakdown, top_projects, days_with_data };
+}
+
+// Helper to build a turn with a timestamp N days ago from now
+function daysAgo(n, overrides) {
+  const ts = new Date(Date.now() - n * 86400000).toISOString();
+  return turn({ timestamp: ts, ...overrides });
+}
+
+// Range filter: 7d excludes 8-day-old turn, includes 2-day-old turn
+test('7d range: excludes turn 8 days old', () => {
+  const old  = daysAgo(8, { session_id: 'old', input_tokens: 1000, output_tokens: 0 });
+  const recent = daysAgo(2, { session_id: 'new', input_tokens: 500,  output_tokens: 0 });
+  const fd = computeFilteredData([old, recent], { range: '7d', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+  eq(fd.daily_usage[0].total_tokens, 500);
+});
+
+test('7d range: includes turn exactly 2 days old', () => {
+  const t = daysAgo(2, { session_id: 's1', input_tokens: 300, output_tokens: 100 });
+  const fd = computeFilteredData([t], { range: '7d', model: 'all' });
+  eq(fd.daily_usage[0].total_tokens, 400);
+});
+
+test('all range: includes old turn', () => {
+  const old = turn({ timestamp: '2020-01-01T12:00:00Z', session_id: 'old', input_tokens: 999, output_tokens: 0 });
+  const fd = computeFilteredData([old], { range: 'all', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+  eq(fd.daily_usage[0].total_tokens, 999);
+});
+
+// Model filter: opus keeps only opus-family turns
+test('model=opus: keeps only opus turns', () => {
+  const t1 = turn({ model: 'claude-opus-4-5',   input_tokens: 1000, output_tokens: 0, session_id: 's1' });
+  const t2 = turn({ model: 'claude-sonnet-3-7', input_tokens: 500,  output_tokens: 0, session_id: 's2' });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'opus' });
+  eq(fd.daily_usage[0].total_tokens, 1000);
+});
+
+test('model=sonnet: excludes opus turns', () => {
+  const t1 = turn({ model: 'claude-opus-4-5',   input_tokens: 1000, output_tokens: 0, session_id: 's1' });
+  const t2 = turn({ model: 'claude-sonnet-3-7', input_tokens: 200,  output_tokens: 100, session_id: 's2' });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'sonnet' });
+  eq(fd.daily_usage[0].total_tokens, 300);
+});
+
+// daily_usage: two same-UTC-day turns bucket into one entry, sessions = distinct session count
+test('daily_usage: two same-day turns → one entry with summed tokens', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 'A', input_tokens: 100, output_tokens: 50 });
+  const t2 = turn({ timestamp: '2026-06-15T14:00:00Z', session_id: 'A', input_tokens: 200, output_tokens: 100 });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'all' });
+  eq(fd.daily_usage.length, 1);
+  eq(fd.daily_usage[0].total_tokens, 450);
+});
+
+test('daily_usage: sessions = distinct session_id count', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 'A', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-15T12:00:00Z', session_id: 'B', input_tokens: 200, output_tokens: 0 });
+  const t3 = turn({ timestamp: '2026-06-15T14:00:00Z', session_id: 'A', input_tokens: 50,  output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2, t3], { range: 'all', model: 'all' });
+  eq(fd.daily_usage[0].sessions, 2);  // A and B, not 3
+});
+
+// daily_usage ascending sort
+test('daily_usage: sorted ascending by day', () => {
+  const t1 = turn({ timestamp: '2026-06-17T10:00:00Z', session_id: 'A', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 'B', input_tokens: 200, output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'all' });
+  assert.ok(fd.daily_usage[0].day < fd.daily_usage[1].day, 'should be ascending');
+});
+
+// top_projects: sorts by tokens desc, slices to 8
+test('top_projects: sorts by tokens desc', () => {
+  const turns9 = [];
+  // 9 projects, each with distinct token volumes descending
+  for (let i = 9; i >= 1; i--) {
+    turns9.push(turn({ cwd: `/home/user/proj-${i}`, session_id: `s${i}`, input_tokens: i * 1000, output_tokens: 0 }));
+  }
+  const fd = computeFilteredData(turns9, { range: 'all', model: 'all' });
+  eq(fd.top_projects.length, 8);
+  eq(fd.top_projects[0].project_name, 'proj-9');   // highest tokens first
+  eq(fd.top_projects[7].project_name, 'proj-2');   // 9th (proj-1) excluded
+});
+
+test('top_projects: sessions = distinct session_id per project', () => {
+  const t1 = turn({ cwd: '/home/user/myproject', session_id: 'A', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ cwd: '/home/user/myproject', session_id: 'B', input_tokens: 200, output_tokens: 0 });
+  const t3 = turn({ cwd: '/home/user/myproject', session_id: 'A', input_tokens: 50,  output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2, t3], { range: 'all', model: 'all' });
+  eq(fd.top_projects[0].sessions, 2);
+});
+
+test('top_projects: empty cwd → "unknown"', () => {
+  const t = turn({ cwd: '', session_id: 's1', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.top_projects[0].project_name, 'unknown');
+});
+
+// days_with_data = distinct UTC day count
+test('days_with_data equals distinct UTC day count', () => {
+  const t1 = turn({ timestamp: '2026-06-15T10:00:00Z', session_id: 'A', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-15T20:00:00Z', session_id: 'B', input_tokens: 200, output_tokens: 0 });
+  const t3 = turn({ timestamp: '2026-06-16T10:00:00Z', session_id: 'C', input_tokens: 50,  output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2, t3], { range: 'all', model: 'all' });
+  eq(fd.days_with_data, 2);  // 2026-06-15 and 2026-06-16
+});
+
+test('days_with_data = 0 when no turns in range', () => {
+  const old = turn({ timestamp: '2020-01-01T12:00:00Z', session_id: 's1', input_tokens: 100, output_tokens: 0 });
+  const fd = computeFilteredData([old], { range: '7d', model: 'all' });
+  eq(fd.days_with_data, 0);
+});
+
+// model_breakdown: 'other' family maps to 'unknown'
+test('model_breakdown: other/unknown family maps to "unknown"', () => {
+  const t = turn({ model: 'unknown-model', session_id: 's1', input_tokens: 500, output_tokens: 0 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.model_breakdown[0].model_family, 'unknown');
+});
+
+test('model_breakdown: order is opus, sonnet, haiku, unknown', () => {
+  const turns3 = [
+    turn({ model: 'claude-haiku-3-5',  session_id: 's1', input_tokens: 100, output_tokens: 0 }),
+    turn({ model: 'claude-sonnet-3-7', session_id: 's2', input_tokens: 200, output_tokens: 0 }),
+    turn({ model: 'claude-opus-4-5',   session_id: 's3', input_tokens: 300, output_tokens: 0 }),
+  ];
+  const fd = computeFilteredData(turns3, { range: 'all', model: 'all' });
+  eq(fd.model_breakdown[0].model_family, 'opus');
+  eq(fd.model_breakdown[1].model_family, 'sonnet');
+  eq(fd.model_breakdown[2].model_family, 'haiku');
+});
+
+test('model_breakdown: pct sums to ~100', () => {
+  const turns3 = [
+    turn({ model: 'claude-opus-4-5',   session_id: 's1', input_tokens: 500, output_tokens: 0 }),
+    turn({ model: 'claude-sonnet-3-7', session_id: 's2', input_tokens: 300, output_tokens: 0 }),
+    turn({ model: 'claude-haiku-3-5',  session_id: 's3', input_tokens: 200, output_tokens: 0 }),
+  ];
+  const fd = computeFilteredData(turns3, { range: 'all', model: 'all' });
+  const sum = fd.model_breakdown.reduce((s, m) => s + m.pct, 0);
+  // ponytail: rounding may cause off-by-one; allow sum 99-101
+  assert.ok(sum >= 99 && sum <= 101, `pct sum ${sum} not in [99,101]`);
+});
+
+// heatmap: day_of_week and hour_utc bucketing
+test('heatmap: correct day_of_week and hour_utc from timestamp', () => {
+  // 2026-06-15T14:30:00Z → Mon = UTC day 1, hour 14
+  const t = turn({ timestamp: '2026-06-15T14:30:00Z', session_id: 's1', input_tokens: 200, output_tokens: 100 });
+  const fd = computeFilteredData([t], { range: 'all', model: 'all' });
+  eq(fd.heatmap.length, 1);
+  eq(fd.heatmap[0].day_of_week, 1);  // Monday
+  eq(fd.heatmap[0].hour_utc, 14);
+  eq(fd.heatmap[0].tokens, 300);
+});
+
+test('heatmap: two turns same cell sum tokens', () => {
+  const t1 = turn({ timestamp: '2026-06-15T14:00:00Z', session_id: 's1', input_tokens: 100, output_tokens: 0 });
+  const t2 = turn({ timestamp: '2026-06-15T14:59:00Z', session_id: 's2', input_tokens: 200, output_tokens: 0 });
+  const fd = computeFilteredData([t1, t2], { range: 'all', model: 'all' });
+  eq(fd.heatmap.length, 1);
+  eq(fd.heatmap[0].tokens, 300);
+});
+
+// ================================================================
 // Summary
 // ================================================================
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

@@ -7,6 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- ponytail: CDN-pinned to major v4. Offline use breaks charts; upgrade path = vendor the file inline if offline support is ever required. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 /* === Design System (dump 4.1) === */
 :root {
@@ -177,6 +179,29 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .d2{animation-delay:160ms}
 .d3{animation-delay:240ms}
 .d4{animation-delay:320ms}
+
+/* Phase 2 — filter bar + charts (dump 4.5, 7.4, 7.6, 7.7, 7.8) */
+.btn-secondary.sel{border-color:var(--accent);color:var(--accent)}
+.filter-bar{display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding:14px 20px;background:var(--s1);border:1px solid var(--bdr);border-radius:14px}
+.filter-group{display:flex;align-items:center;gap:8px}
+.filter-label{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--mu);text-transform:none}
+.filter-divider{width:1px;height:20px;background:var(--bdr2)}
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.chart-container-tall{position:relative;height:240px}
+.chart-empty{height:240px;display:flex;align-items:center;justify-content:center;color:var(--mu);font-size:13px}
+.doughnut-wrap{position:relative;height:200px}
+.doughnut-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:'JetBrains Mono',monospace;font-size:15px;color:var(--text);text-align:center;pointer-events:none}
+.chart-legend{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.legend-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mu)}
+.legend-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+/* Heatmap */
+.heatmap-grid{display:grid;grid-template-columns:32px repeat(24,1fr);gap:2px;margin-top:12px}
+.heatmap-row-label{font-size:10px;color:var(--mu);display:flex;align-items:center;justify-content:flex-end;padding-right:4px}
+.heatmap-cell{height:16px;border-radius:2px;background:transparent;cursor:default}
+.heatmap-hour-labels{display:grid;grid-template-columns:32px repeat(24,1fr);gap:2px;margin-bottom:4px}
+.heatmap-hour-label{font-size:9px;color:var(--mu2);text-align:center}
+.heatmap-note{font-size:11px;color:var(--mu2);margin-top:10px}
+.heatmap-empty{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--mu);font-size:13px}
 </style>
 </head>
 <body>
@@ -786,6 +811,425 @@ async function loadDataLocal() {
 }
 
 // ================================================================
+// PHASE 2 — FILTER STATE + DATA (dump 7.4, 15.1)
+// ================================================================
+let _filter = { range: '30d', model: 'all' };  // dump 7.4 defaults: 30d ●, all ●
+
+// Chart handles — destroyed before re-init on re-filter to prevent canvas-reuse errors
+let _dailyChart = null, _modelChart = null, _projChart = null;
+
+// ponytail: Chart.js applies one font family per context; fine here.
+function fmtTokens(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'K';
+  return String(n);
+}
+
+async function loadFilteredData() {
+  // returns { daily_usage, heatmap, model_breakdown, top_projects, days_with_data }
+  const now = Date.now();
+  let cutoff = 0;
+  if      (_filter.range === '7d')  cutoff = now - 7  * 86400000;
+  else if (_filter.range === '30d') cutoff = now - 30 * 86400000;
+  else if (_filter.range === '90d') cutoff = now - 90 * 86400000;
+  // 'all' → cutoff stays 0 (include all)
+
+  let turns = await dbGetAll('turns');
+
+  // 1. Range filter
+  if (cutoff > 0) {
+    turns = turns.filter(t => new Date(t.timestamp).getTime() >= cutoff);
+  }
+
+  // 2. Model filter — reuses existing modelFamily() (line 498)
+  if (_filter.model !== 'all') {
+    turns = turns.filter(t => modelFamily(t.model) === _filter.model);
+  }
+
+  // --- daily_usage (dump 15.1) ---
+  // UTC day bucket: t.timestamp.substring(0,10) — consistent with Phase 1 lines 766/771
+  const dailyMap = {};
+  for (const t of turns) {
+    const day = t.timestamp.substring(0, 10);
+    if (!dailyMap[day]) dailyMap[day] = { day, total_tokens: 0, sessions: new Set() };
+    dailyMap[day].total_tokens += t.input_tokens + t.output_tokens;
+    dailyMap[day].sessions.add(t.session_id);
+  }
+  const daily_usage = Object.values(dailyMap)
+    .map(d => ({ day: d.day, total_tokens: d.total_tokens, sessions: d.sessions.size }))
+    .sort((a, b) => a.day < b.day ? -1 : 1);
+
+  // --- heatmap (dump 15.1) ---
+  // day_of_week = getUTCDay() → 0=Sun..6=Sat; hour_utc = getUTCHours()
+  const hmMap = {};
+  for (const t of turns) {
+    const dt  = new Date(t.timestamp);
+    const dow = dt.getUTCDay();
+    const hr  = dt.getUTCHours();
+    const key = `${dow}-${hr}`;
+    if (!hmMap[key]) hmMap[key] = { day_of_week: dow, hour_utc: hr, tokens: 0 };
+    hmMap[key].tokens += t.input_tokens + t.output_tokens;
+  }
+  const heatmap = Object.values(hmMap);
+
+  // --- model_breakdown (dump 15.1) ---
+  const familyTok = { opus: 0, sonnet: 0, haiku: 0, unknown: 0 };
+  for (const t of turns) {
+    const fam = modelFamily(t.model);
+    const key = fam === 'other' ? 'unknown' : fam;  // map 'other' → 'unknown' per dump 7.8
+    familyTok[key] += t.input_tokens + t.output_tokens;
+  }
+  const totalTok = familyTok.opus + familyTok.sonnet + familyTok.haiku + familyTok.unknown;
+  // Order: opus, sonnet, haiku, unknown (dump 7.8); include only families with tokens > 0
+  // ponytail: pcts rounded independently, may not sum to exactly 100. Fine for a legend;
+  // upgrade = largest-remainder rounding if it ever looks off.
+  const model_breakdown = ['opus', 'sonnet', 'haiku', 'unknown']
+    .filter(f => familyTok[f] > 0)
+    .map(f => ({
+      model_family: f,
+      tokens: familyTok[f],
+      pct: totalTok > 0 ? Math.round(familyTok[f] / totalTok * 100) : 0,
+    }));
+
+  // --- top_projects (dump 15.1) ---
+  // project_name = last path segment of t.cwd (reuse Phase 1 derivation, line 512)
+  const projMap = {};
+  for (const t of turns) {
+    const name = (t.cwd || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'unknown';
+    if (!projMap[name]) projMap[name] = { project_name: name, tokens: 0, sessions: new Set() };
+    projMap[name].tokens += t.input_tokens + t.output_tokens;
+    projMap[name].sessions.add(t.session_id);
+  }
+  const top_projects = Object.values(projMap)
+    .map(p => ({ project_name: p.project_name, tokens: p.tokens, sessions: p.sessions.size }))
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 8);
+
+  const days_with_data = daily_usage.length;
+
+  return { daily_usage, heatmap, model_breakdown, top_projects, days_with_data };
+}
+
+// ================================================================
+// PHASE 2 — RENDER HELPERS (dump 7.4, 7.6, 7.7, 7.8)
+// ================================================================
+
+function renderFilterBar() {
+  const rOpts = ['7d', '30d', '90d', 'all'];
+  const mOpts = ['all', 'opus', 'sonnet', 'haiku'];
+  const rBtns = rOpts.map(o =>
+    `<button class="btn-secondary${_filter.range === o ? ' sel' : ''}" data-ftype="range" data-fval="${o}">${o}</button>`
+  ).join('');
+  const mBtns = mOpts.map(o =>
+    `<button class="btn-secondary${_filter.model === o ? ' sel' : ''}" data-ftype="model" data-fval="${o}">${o}</button>`
+  ).join('');
+  return `<div class="filter-bar" id="filter-bar">
+    <div class="filter-group">
+      <span class="filter-label">range</span>
+      ${rBtns}
+    </div>
+    <div class="filter-divider"></div>
+    <div class="filter-group">
+      <span class="filter-label">model</span>
+      ${mBtns}
+    </div>
+  </div>`;
+}
+
+function renderChartsShell() {
+  return `<div class="card au d5" id="chart-daily-burn"></div>
+  <div class="card au d5" id="chart-heatmap"></div>
+  <div class="charts-grid">
+    <div class="card au d5" id="chart-model-breakdown"></div>
+    <div class="card au d5" id="chart-top-projects"></div>
+  </div>`;
+}
+
+async function renderFilteredSections() {
+  const fd = await loadFilteredData();
+  renderDailyBurn(fd);
+  renderHeatmap(fd);
+  renderModelBreakdown(fd);
+  renderTopProjects(fd);
+}
+
+function renderDailyBurn(fd) {
+  const el = document.getElementById('chart-daily-burn');
+  if (!el) return;
+
+  const todayUTC = new Date().toISOString().substring(0, 10);
+  el.innerHTML = `<div class="forecast-header"><h3>🔥 daily burn rate</h3></div>` +
+    (fd.daily_usage.length === 0
+      ? `<div class="chart-empty">no usage in this range</div>`
+      : `<div class="chart-container-tall"><canvas id="canvas-daily"></canvas></div>`);
+
+  if (fd.daily_usage.length === 0) return;
+  if (!window.Chart) return;  // CDN miss guard — never blank Phase 1
+
+  if (_dailyChart) { _dailyChart.destroy(); _dailyChart = null; }
+
+  const labels = fd.daily_usage.map(d => d.day);
+  const data   = fd.daily_usage.map(d => d.total_tokens);
+  const sessions = fd.daily_usage.map(d => d.sessions);
+  const colors = labels.map(d => d === todayUTC ? '#FB923C' : '#F97316');  // --accent2 / --accent
+
+  _dailyChart = new Chart(document.getElementById('canvas-daily'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ data, backgroundColor: colors, borderRadius: 4, borderSkipped: false }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => {
+              const d = ctx[0].label;
+              return d === todayUTC ? `${d} · today` : d;
+            },
+            label: ctx => {
+              const i = ctx.dataIndex;
+              return `${fmtTokens(data[i])} tokens · ${sessions[i]} session${sessions[i] !== 1 ? 's' : ''}`;
+            },
+          },
+          titleFont: { family: 'JetBrains Mono' },
+          bodyFont:  { family: 'JetBrains Mono' },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#6B6460', maxRotation: 45 },
+          grid: { color: 'rgba(255,255,255,.04)' },
+        },
+        y: {
+          ticks: {
+            font: { family: 'JetBrains Mono', size: 10 },
+            color: '#6B6460',
+            callback: v => fmtTokens(v),
+          },
+          grid: { color: 'rgba(255,255,255,.04)' },
+        },
+      },
+    },
+  });
+}
+
+function renderHeatmap(fd) {
+  const el = document.getElementById('chart-heatmap');
+  if (!el) return;
+
+  const tz = _cfg.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // Compute local-TZ peak note (dump 7.7)
+  // Peak window for the note = 13:00-19:00 UTC; convert both bounds to local time
+  // ponytail: TZ short-name via formatToParts timeZoneName; if unavailable fall back to the IANA string.
+  const refDate = new Date('2026-01-05T13:00:00Z');  // a Monday, doesn't matter for time conversion
+  const refDateEnd = new Date('2026-01-05T19:00:00Z');
+  let tzAbbr;
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZone: tz, timeZoneName: 'short' }).formatToParts(refDate);
+    tzAbbr = parts.find(p => p.type === 'timeZoneName')?.value || tz;
+  } catch { tzAbbr = tz; }
+  const fmt = new Intl.DateTimeFormat(undefined, { timeZone: tz, hour: 'numeric', minute: '2-digit' });
+  const peakStart = fmt.format(refDate).toLowerCase();
+  const peakEnd   = fmt.format(refDateEnd).toLowerCase();
+
+  el.innerHTML = `<div class="forecast-header"><h3>🌡 when you work</h3><p>amber = peak hours</p></div>`;
+
+  if (fd.days_with_data < 3) {
+    el.innerHTML += `<div class="heatmap-empty">add more data to see your patterns</div>`;
+    el.innerHTML += `<div class="heatmap-note">in your timezone (${tzAbbr}): peak hours = ${peakStart} – ${peakEnd}</div>`;
+    return;
+  }
+
+  // Build lookup: "dow-hour" → tokens
+  const lookup = {};
+  let maxTok = 0;
+  for (const cell of fd.heatmap) {
+    lookup[`${cell.day_of_week}-${cell.hour_utc}`] = cell.tokens;
+    if (cell.tokens > maxTok) maxTok = cell.tokens;
+  }
+
+  // Row order Mon-Sun; JS day_of_week is 0=Sun..6=Sat
+  // rowIndex = (dow + 6) % 7 → Mon=0..Sun=6
+  const ROW_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  // Hour labels row
+  let html = `<div class="heatmap-hour-labels"><div class="heatmap-hour-label"></div>`;
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="heatmap-hour-label">${h % 6 === 0 ? h : ''}</div>`;
+  }
+  html += `</div><div class="heatmap-grid">`;
+
+  for (let rowIndex = 0; rowIndex < 7; rowIndex++) {
+    // rowIndex=0 → Mon (dow=1), rowIndex=6 → Sun (dow=0)
+    const dow = (rowIndex + 1) % 7;  // Mon=1..Sat=6, Sun=0
+    const isWeekday = rowIndex <= 4;
+
+    html += `<div class="heatmap-row-label">${ROW_LABELS[rowIndex]}</div>`;
+
+    for (let h = 0; h < 24; h++) {
+      const tokens = lookup[`${dow}-${h}`] || 0;
+      // ponytail: pinned log-intensity formula — maxTok = max cell in range; per cell
+      // intensity = tokens>0 ? Math.log(1+tokens)/Math.log(1+maxTok) : 0.
+      // Ceiling: log base relative to range max; upgrade = quantile bucketing if a few
+      // huge cells wash out the rest.
+      const intensity = (tokens > 0 && maxTok > 0)
+        ? Math.log(1 + tokens) / Math.log(1 + maxTok)
+        : 0;
+
+      const isPeak = isWeekday && h >= 13 && h <= 18;
+      // Tooltip (dump 7.7 exact format): [Day] [Hour]:00 [user TZ] · [X] tokens · peak / off-peak
+      // Inline check — do NOT fake a timestamp for isPeakHour
+      const peakLabel = isPeak ? 'peak' : 'off-peak';
+      const tip = `${ROW_LABELS[rowIndex]} ${h}:00 ${tzAbbr} · ${fmtTokens(tokens)} tokens · ${peakLabel}`;
+
+      let bg;
+      if (isPeak) {
+        // Peak column tint: token color layered over faint amber (dump 7.7)
+        // cell background: linear-gradient(token-alpha, token-alpha), --amdim
+        bg = `linear-gradient(rgba(249,115,22,${intensity.toFixed(3)}),rgba(249,115,22,${intensity.toFixed(3)})),rgba(251,191,36,.08)`;
+      } else {
+        bg = intensity > 0 ? `rgba(249,115,22,${intensity.toFixed(3)})` : 'transparent';
+      }
+
+      html += `<div class="heatmap-cell" title="${tip}" style="background:${bg}"></div>`;
+    }
+  }
+  html += `</div>`;
+  html += `<div class="heatmap-note">in your timezone (${tzAbbr}): peak hours = ${peakStart} – ${peakEnd}</div>`;
+
+  el.innerHTML += html;
+}
+
+function renderModelBreakdown(fd) {
+  const el = document.getElementById('chart-model-breakdown');
+  if (!el) return;
+
+  // ponytail: segment hex tints chosen to match dump's purple/sky/teal/muted wording;
+  // swap if a brand palette is later defined.
+  const COLORS = { opus: '#A78BFA', sonnet: '#38BDF8', haiku: '#2DD4BF', unknown: '#4A4440' };
+
+  el.innerHTML = `<div class="forecast-header"><h3>model breakdown</h3></div>`;
+
+  if (fd.model_breakdown.length === 0) {
+    el.innerHTML += `<div class="chart-empty">no usage in this range</div>`;
+    return;
+  }
+  if (!window.Chart) return;
+
+  const total = fd.model_breakdown.reduce((s, m) => s + m.tokens, 0);
+
+  el.innerHTML += `<div class="doughnut-wrap">
+    <canvas id="canvas-model"></canvas>
+    <div class="doughnut-center"><span class="mono">${fmtTokens(total)}</span></div>
+  </div>`;
+
+  const legend = fd.model_breakdown.map(m =>
+    `<div class="legend-row">
+      <div class="legend-swatch" style="background:${COLORS[m.model_family] || COLORS.unknown}"></div>
+      <span>${m.model_family}</span>
+      <span class="mono" style="margin-left:auto">${fmtTokens(m.tokens)} · ${m.pct}%</span>
+    </div>`
+  ).join('');
+  el.innerHTML += `<div class="chart-legend">${legend}</div>`;
+
+  if (_modelChart) { _modelChart.destroy(); _modelChart = null; }
+
+  _modelChart = new Chart(document.getElementById('canvas-model'), {
+    type: 'doughnut',
+    data: {
+      labels: fd.model_breakdown.map(m => m.model_family),
+      datasets: [{
+        data: fd.model_breakdown.map(m => m.tokens),
+        backgroundColor: fd.model_breakdown.map(m => COLORS[m.model_family] || COLORS.unknown),
+        borderWidth: 0,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '65%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${fmtTokens(ctx.raw)} tokens · ${fd.model_breakdown[ctx.dataIndex].pct}%`,
+          },
+          titleFont: { family: 'JetBrains Mono' },
+          bodyFont:  { family: 'JetBrains Mono' },
+        },
+      },
+    },
+  });
+}
+
+function renderTopProjects(fd) {
+  const el = document.getElementById('chart-top-projects');
+  if (!el) return;
+
+  el.innerHTML = `<div class="forecast-header"><h3>top projects</h3></div>`;
+
+  if (fd.top_projects.length === 0) {
+    el.innerHTML += `<div class="chart-empty">no usage in this range</div>`;
+    return;
+  }
+  if (!window.Chart) return;
+
+  if (_projChart) { _projChart.destroy(); _projChart = null; }
+
+  const labels   = fd.top_projects.map(p => p.project_name);
+  const data     = fd.top_projects.map(p => p.tokens);
+  const sessions = fd.top_projects.map(p => p.sessions);
+
+  el.innerHTML += `<div class="chart-container-tall"><canvas id="canvas-projects"></canvas></div>`;
+
+  _projChart = new Chart(document.getElementById('canvas-projects'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ data, backgroundColor: '#F97316', borderRadius: 4, borderSkipped: false }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => ctx[0].label,
+            label: ctx => {
+              const i = ctx.dataIndex;
+              return `${fmtTokens(data[i])} tokens · ${sessions[i]} session${sessions[i] !== 1 ? 's' : ''}`;
+            },
+          },
+          titleFont: { family: 'JetBrains Mono' },
+          bodyFont:  { family: 'JetBrains Mono' },
+        },
+      },
+      scales: {
+        x: {
+          ticks: {
+            font: { family: 'JetBrains Mono', size: 10 },
+            color: '#6B6460',
+            callback: v => fmtTokens(v),
+          },
+          grid: { color: 'rgba(255,255,255,.04)' },
+        },
+        y: {
+          ticks: { font: { family: 'JetBrains Mono', size: 10 }, color: '#6B6460' },
+          grid: { display: false },
+        },
+      },
+    },
+  });
+}
+
+// ================================================================
 // RENDER
 // ================================================================
 async function renderDashboard() {
@@ -796,7 +1240,10 @@ async function renderDashboard() {
   document.getElementById('plan-badge').textContent  = planLabel(_cfg.plan);
 
   document.getElementById('dashboard-content').innerHTML =
-    renderStartCheck(d) + renderMiniStats(d) + renderForecast(d);
+    renderStartCheck(d) + renderMiniStats(d) + renderForecast(d) +
+    renderFilterBar() + renderChartsShell();
+
+  await renderFilteredSections();
 }
 
 function stateColor(state) {
@@ -982,6 +1429,21 @@ document.getElementById('tab-bar').addEventListener('click', e => {
   btn.classList.add('active');
   const panel = document.getElementById('panel-' + btn.dataset.tab);
   if (panel) panel.classList.add('active');
+});
+
+// Filter bar — delegated handler (mirrors tab-bar pattern, dump 7.4)
+// Calls renderFilteredSections() only — never re-renders Start Check / Mini Stats / Forecast (AC#1)
+document.getElementById('dashboard-content').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-ftype]');
+  if (!btn) return;
+  const type = btn.dataset.ftype, val = btn.dataset.fval;
+  if (type === 'range') _filter.range = val;
+  else if (type === 'model') _filter.model = val;
+  // Toggle .sel within the clicked group only
+  const group = btn.closest('.filter-group');
+  if (group) group.querySelectorAll('.btn-secondary').forEach(b => b.classList.remove('sel'));
+  btn.classList.add('sel');
+  await renderFilteredSections();
 });
 
 // ================================================================

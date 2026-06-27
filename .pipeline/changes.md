@@ -1,46 +1,32 @@
-# changes — Phase 1
+# Phase 2 — filtered-charts — changes
 
 ## Files changed
 
-### `burnboard.html` (new)
-Single self-contained file. All HTML/CSS/JS inline. No build step.
+### `burnboard.html`
+- Added Chart.js v4 CDN `<script>` tag in `<head>` (after Google Fonts link, before `<style>`).
+- Added Phase 2 CSS rules: `.btn-secondary.sel`, `.filter-bar`, `.charts-grid`, `.chart-container-tall`, `.chart-empty`, `.doughnut-wrap`, `.doughnut-center`, `.chart-legend`, `.legend-row`, `.legend-swatch`, `.heatmap-*` classes.
+- Added module-level `_filter` state, chart handles (`_dailyChart`, `_modelChart`, `_projChart`), and `fmtTokens()`.
+- Added `loadFilteredData()` — reads all turns from IDB, applies range + model filters, returns `daily_usage`, `heatmap`, `model_breakdown`, `top_projects`, `days_with_data`.
+- Added `renderFilterBar()`, `renderChartsShell()` — static HTML builders.
+- Added `renderFilteredSections()` — calls `loadFilteredData()` then delegates to four render functions.
+- Added `renderDailyBurn()`, `renderHeatmap()`, `renderModelBreakdown()`, `renderTopProjects()` — each destroys prior Chart instance before creating a new one.
+- Extended `renderDashboard()` to append filter bar + chart shell containers, then `await renderFilteredSections()`. Phase 1 `renderStartCheck / renderMiniStats / renderForecast` lines are untouched.
+- Added delegated filter-bar click handler on `#dashboard-content` — updates `_filter`, toggles `.sel`, calls `renderFilteredSections()` only (never `renderDashboard()`).
 
-Sections implemented:
-- Design system CSS vars, atmospheric glow, film grain, scrollbar, card/button styles (dump 4.1–4.6)
-- Connect screen with accordion, trust strip, steps, CTA, compat warning (dump 5.2)
-- Sync screen with spinner, live status, progress bar, privacy note (dump 5.4)
-- App shell: sticky header, plan badge, sync time, tips/sync/settings buttons, tab bar (dump 6)
-- Dashboard: Start Check, Mini Stats row, Week Forecast (dump 7.1/7.2/7.5)
-- Settings overlay: plan dropdown, billing start, timezone, account names, save + wipe (dump 12)
-- IDB layer: `burnboard_v2` v2, five stores with exact indexes (dump 13.1)
-- Folder walker + JSONL parser (dump 14)
-- Computation helpers: `getMondayUTC`, weekly cap, current window, today vs avg, forecast (dump 15.2/15.3)
-- Self-check: inline `console.assert` block covering `isPeakHour` (6 cases) and state machine (7 cases)
+### `burnboard.test.js`
+- Added `computeFilteredData()` (pure extraction of `loadFilteredData()` logic with turns array instead of IDB call).
+- Added `daysAgo()` helper for time-relative turn fixtures.
+- Added 18 Phase 2 assertions covering: 7d/all range cutoff, model filter, daily_usage bucketing + session dedup, daily_usage ascending sort, top_projects desc sort + 8-slice, top_projects session count, empty-cwd → "unknown", days_with_data count, model_breakdown unknown mapping + order + pct sum, heatmap day/hour bucketing + cell token summation.
+- Total: 100 tests, 100 pass.
 
----
+## Riskiest / least-obvious parts for the Tester
 
-## What the tester should focus on
+1. **Filter bar click handler scoping (AC#1).** The handler is attached to `#dashboard-content` via event delegation. It must update `_filter` and call `renderFilteredSections()` ONLY. If the handler accidentally called `renderDashboard()`, Start Check / Mini Stats / Forecast would re-render and flicker. Verify by clicking a filter pill and confirming the phase-1 sections do not re-render or lose state.
 
-### Highest risk: re-sync dedup (the `dbDeleteTurnsBySession` cursor loop)
-- On a second sync of the same folder, turns for touched sessions must be deleted before reinserting. If this is broken, weekly cap percentages double-count.
-- Test by syncing, then syncing again without changing files, and confirming token totals stay identical.
-- The cursor walks `by_session` index and deletes each key in a single `readwrite` transaction.
+2. **Chart destroy-before-recreate on re-filter.** Each render function calls `.destroy()` on the module-level handle before `new Chart(...)`. If the canvas element is swapped (innerHTML reset before the canvas is referenced), the old Chart instance still holds a reference to the now-detached canvas — the destroy call is safe (Chart.js handles detached canvases), but the new chart must target the freshly inserted canvas. Tester should rapid-click filter pills and confirm no "Canvas is already in use" console error appears.
 
-### Second: window computation across sessions
-- `buildWindows` operates on ALL stored turns (not just the current sync batch), sorted by timestamp. A gap > 5h starts a new window.
-- Edge case: if all turns are from the same session, there should still be multiple windows if gaps exist.
-- `window_id` is `djb2hex(window_start)` — a deterministic non-crypto hash. Full recompute each sync means `put` overwrites deterministically.
+3. **Heatmap `rowIndex → dow` mapping.** `rowIndex = 0` is Mon; JS `getUTCDay()` returns `0=Sun..6=Sat`. The conversion is `dow = (rowIndex + 1) % 7`. A bug here shifts every row label one position and makes the peak-column tint (hours 13-18, weekday rows 0-4) misalign with actual weekday data. Verify Mon-Sun labels match actual token density visually with real data.
 
-### Third: Start Check state machine ordering
-- Evaluation order matters: `no_data` first, then `weekend`, then peak/off-peak branches.
-- Self-check in browser console covers the key cases; open DevTools and verify "[BurnBoard] self-check passed" on load.
+4. **Heatmap under-3-days gate.** If `days_with_data < 3`, the grid is skipped entirely and only the "add more data" message renders. With exactly 3 days the grid must appear. Edge case: if the user has data but the filter reduces it below 3 days, the gate must still fire.
 
-### Fourth: `today_vs_avg` denominator is always 30 (not distinct days with data)
-- A user with only 3 days of data gets a very low average. This is per spec (ORIGINATED formula).
-
-### Fifth: `projOpusPct` division by `fracElapsed` with clamp(0.01, 1)
-- `fracElapsed` is clamped to 0.01 minimum so we never divide by zero at the start of Monday.
-- At Monday 00:01 UTC this means projected pace is 100x actual — forecast will show `tight` or `on_track` based on actual opus_pct vs 100.
-
-### Scope guard — confirmed NOT built
-Charts, insights, filter bar, sessions table, history tab, tips tab, what's coming panel, two-account sync, reconnect screen, monthly cache population, toast system, favicon, reduced-motion handling.
+5. **TZ peak-note computation.** The note derives `tzAbbr` via `Intl.DateTimeFormat.formatToParts` with a fixed reference date (`2026-01-05`). For timezones that observe DST, January may give a different abbrev than summer. The spec says to use `_cfg.timezone` and derive real values — do NOT hard-code IST. Verify with a non-IST timezone in settings.
