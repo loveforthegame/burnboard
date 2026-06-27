@@ -1,89 +1,91 @@
-# Test Results — Phase 3: insights-and-sessions
+# Test Results — Phase 4 (history-and-export)
 
 ## Run
 
 ```
 node burnboard.test.js
-192 tests: 192 passed, 0 failed
+238 tests: 238 passed, 0 failed
 ```
 
-Baseline confirmed at 177 before additions. 15 new assertions added.
-
----
+Prior count: 220 (confirmed passing before changes). Added 18 new assertions.
 
 ## What was exercised
 
-### Prior 177 assertions (verified still pass)
-All Phase 1/2 assertions intact: isPeakHour, djb2hex, modelFamily, buildWindows (gap logic + dedup), buildSessions, getMondayUTC, clamp, state machine, forecast math, filtered data pipeline (range cutoffs, model filter, daily/heatmap/model_breakdown/top_projects bucketing).
+### Confirmed baseline (220 prior assertions, all pass)
+All prior Phase 1–3 tests continue to pass unchanged.
 
-Phase 3 prior 54: fmtSessionDur (8), relWhen (7), Spiral trigger (5), Cache DANGER+WARNING (8), Peak Penalty (3), Opus Waste (5), priority/max-3 (2), session aggregation (8), context-growth/heavy-context (3), cost_by_model (4), summary (3).
+### Phase 4 — original 28 assertions (already present)
 
-### 15 new assertions added
+**getWeeklyBuckets (7 tests)**
+- `n` buckets returned, oldest-first ordering
+- Empty turns → all buckets zero, length n
+- Turn inside current week lands in newest bucket
+- Turn 8 days before Monday lands in correct prior bucket
+- Turn at exactly `thisMonday` 00:00 UTC lands in current week (>= startIso)
+- Turn one ms before Monday lands in prior week (< startIso boundary)
+- `opus_tokens` and `sonnet_tokens` aggregate correctly per bucket
 
-**relWhen boundaries:**
-- Exactly 60m ago → "1h ago" (not "60m ago") — tests the `< 60` gate
-- Exactly 59m ago → ends "m ago"
-- Exactly 47h ago → "yesterday" (within the 48h window)
-- Exactly 49h ago → MMM D format (past the 48h window)
+**aggregateMonths (8 tests)**
+- Empty turns → empty array
+- Single month: `total_tokens = input + output`, `cache_read_tokens` correct
+- Two months: separate records, correct per-month totals
+- `sessions` = distinct `session_id` count (Set dedup)
+- `active_days` = distinct UTC day count
+- `top_model` = dominant family by token volume
+- `top_model` tie → opus wins (stable sort order: opus > sonnet > haiku)
+- `month_key` from turn's own field (not re-derived from timestamp when field present)
 
-**fmtSessionDur boundaries:**
-- 3,599,999ms (59m 59s) → "59 min" — just under the 60-minute gate
-- 3,600,001ms → "1h 0m" — just over the gate
+**getBillingCycles (8 tests)**
+- `billing_start=1`, `now=Jun28`: current cycle starts Jun 1, `day_index=28`
+- `billing_start=15`, `now=Jun10`: current cycle started May 15 (prior-month rollback)
+- `day_index` correct (day 27 of 31-day May→Jun cycle)
+- `days_in_cycle` correct across month boundary (Jan→Feb = 31 days)
+- `day_index` clamped to `days_in_cycle`
+- Turn inside cycle counted; turn in different cycle not counted
+- Returns 4 cycles total
 
-**Spiral trigger:**
-- Session with all turns >7 days ago → excluded from spiralCount (out-of-window guard)
-- Exactly 6 turns → qualifies (>5 strict; confirms the `<= 5` continue is correct)
+**buildCsvRows (5 tests)**
+- Header row matches spec verbatim: `month,total_tokens,input_tokens,output_tokens,cache_reads,sessions,active_days,top_model`
+- Empty records → header-only (no extra newline)
+- One record: raw integer values, `cache_reads` maps from `cache_read_tokens`
+- Column order matches spec exactly (8 columns confirmed by index)
+- Multiple records produce correct row count (header + N rows)
 
-**Opus Waste trigger:**
-- 5 sessions with all turns 10 days ago → excluded (out-of-window guard)
+### Phase 4 — extended boundary coverage (18 new assertions)
 
-**Peak Penalty trigger:**
-- All peak-hour tokens 10 days ago → totalTok7=0 → peakPct=0 → no fire
+**getWeeklyBuckets**
+- Monday 00:00 UTC turn counted exactly once — appears in current week, NOT in prior week (no double-count)
+- Zero-activity week among non-zero weeks is present in bucket array (not dropped or skipped); length remains 12
+- `n=1` returns exactly 1 bucket; its `start_iso` equals the computed Monday
 
-**Session aggregation:**
-- Exactly 20 sessions → all 20 returned (slice(0,20) boundary)
-- Session with two turns 2.5h apart → fmtSessionDur("2h 30m") from first/last_timestamp delta
+**aggregateMonths**
+- Absent `month_key` field falls back to `timestamp.substring(0,7)` (turn with timestamp `2026-05-20T...` and no `month_key` → `month_key: '2026-05'`)
+- `top_model = 'haiku'` when haiku has most tokens
+- Sonnet/haiku tie → sonnet wins (stable sort: sonnet before haiku in ranked array)
+- `cache_read_tokens` sums correctly across multiple turns in same month
 
-**cost_by_model:**
-- Sonnet cost: 2M input * $3/1M + 0.5M output * $15/1M = $13.50
-- Order guarantee: opus appears before sonnet before haiku regardless of insertion order
+**getBillingCycles**
+- Turn at exactly `startIso` (cycle start date 00:00 UTC) IS included (`>= startIso` half-open)
+- Turn at `startIso - 1ms` is excluded from current cycle and counted in prior cycle
+- Year-boundary rollback: `billing_start=15`, `now=Jan 5 2026` → current cycle started Dec 15 2025
+- Feb 2026 cycle: `billing_start=1`, `now=Feb 15` → `days_in_cycle=28` (non-leap year)
+- `billing_start=28`, `now=Feb 28 2026`: `Date.UTC(2026, 2, 28)` = Mar 28; `days_in_cycle=28` (Feb 28 → Mar 28)
+- Cycles ordered newest-first: each `start_iso` is later than the next
+- `day_index=1` when `now` is on the first day of the cycle
+- Prior cycles (i>0) have `day_index=null`
 
-**summary:**
-- Zero turns → all fields zero (no division errors, no undefined)
+**buildCsvRows**
+- All three `top_model` values (`'opus'`, `'sonnet'`, `'haiku'`) produce exactly 7 commas per row (8 columns) — safe without escaping
+- Large integer values (`1500000`) appear as raw strings with no thousands separators
+- No trailing newline after the last row
 
----
+### DOM/browser-only checks (CANNOT-VERIFY-HEADLESS, confirmed by static inspection)
 
-## Threshold verification (spec §7.3 exact boundaries)
-
-| Trigger | Boundary | Fire side | Silent side | Status |
-|---|---|---|---|---|
-| Spiral | ratio > 3.0 | 3.01 fires | 3.0 silent | PASS |
-| Spiral | >5 turns | 6 fires | 5 silent | PASS |
-| Spiral | >=3 sessions | 3 fires | 2 silent | PASS |
-| Cache DANGER | rateNow < 0.10 | 0.05 fires | 0.10 silent | PASS |
-| Cache DANGER | ratePrev > 0.25 | 0.30 fires | 0.25 silent | PASS |
-| Cache DANGER | weekTotal > 50000 | 100k fires | 50k silent | PASS |
-| Cache WARNING | rateNow < 0.15 | 0.10 fires | 0.15 silent | PASS |
-| Cache WARNING | weekTotal > 100000 | 150k fires | 100k silent | PASS |
-| Cache DANGER suppresses WARNING | one card max | danger only | no warning | PASS |
-| Peak | peak_pct > 0.50 | 0.60 fires | 0.50 silent | PASS |
-| Opus Waste | >=5 sessions | 5 fires | 4 silent | PASS |
-| Opus Waste | turn_count < 4 | 3 qualifies | 4 excluded | PASS |
-
----
-
-## CANNOT-VERIFY-HEADLESS (DOM-only behavior, confirmed by static inspection)
-
-1. **copyText 1500ms revert** — `burnboard.html` `copyText()`: `navigator.clipboard.writeText(text)`, then `btn.textContent = 'copied!'`, `btn.classList.add('copied')`, `setTimeout(() => { restore original label + remove class }, 1500)`. 1500ms confirmed in the setTimeout call. Cannot test `navigator.clipboard` under Node.
-
-2. **One-row-open-at-a-time** — module-level `let _openSession = null` toggled in the delegated click handler on `dashboard-content`. Clicking a new row calls `_openSession`'s detail `.remove()` before inserting the new detail row. A second click on the same row closes without re-opening. DOM-only; cannot unit test.
-
-3. **Insights on unfiltered path** — `computeInsights` called inside `loadDataLocal` (HTML ~line 1019), result in `d.insights`. `renderInsights(d)` called from `renderDashboard()`. The filter-bar click handler calls only `renderFilteredSections()`, never `renderDashboard()`. Static inspection confirms insights are not re-computed on filter change.
-
-4. **Sessions+Cost on filtered path** — `renderSessions` and `renderCostSummary` called only from `renderFilteredSections()`. Neither appears in `renderDashboard()` body. Confirmed by grep.
-
-5. **`window._insightCopies` global** — set synchronously inside `renderInsights` before any copy button is clickable. Array is indexed by insight position. Cannot verify under Node (window not defined), but the pattern is safe given synchronous render.
-
----
+11. `recomputeMonthlyCache` try/catch in `runSync` — catch does not re-throw; `renderDashboard()` and `showScreen('app')` run even if recompute throws. Confirmed at burnboard.html ~line 762.
+12. `renderHistory()` called on history tab switch — tab-bar handler fires it after `panel.classList.add('active')`. Confirmed by source inspection.
+13. `_historyBound` flag prevents double-binding — set to `true` after first listener attach; guard checked at start of `renderHistory`. Confirmed by grep.
+14. Account dropdown omitted — no `[Account: All ▾]` control in `renderHistory()`. Phase 5 scope. Confirmed by absence in source.
+15. CSV download via `Blob + URL.createObjectURL + <a download> + .click() + revokeObjectURL`. Confirmed in `exportHistoryCsv()`.
+16. `_cfg.billing_start` used (not `billing_start_day`) — `getBillingCycles` reads `Number(_cfg.billing_start) || 1`. Confirmed by grep.
 
 STATUS: PASS

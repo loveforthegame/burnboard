@@ -2216,6 +2216,256 @@ test('multiple records produce correct row count', () => {
 });
 
 // ================================================================
+// Phase 4 — extended boundary coverage (tester-added)
+// Covers the riskiest edges called out in changes.md:
+//   getWeeklyBuckets: double-count, zero-activity-week-not-dropped
+//   aggregateMonths: month_key fallback, haiku/sonnet top_model
+//   getBillingCycles: cycle-start inclusion, year-boundary rollback, Feb length
+//   buildCsvRows: raw integers, top_model is comma-free
+// ================================================================
+console.log('\nPhase 4 — extended boundary coverage');
+
+// ----------------------------------------------------------------
+// getWeeklyBuckets — additional gaps
+// ----------------------------------------------------------------
+
+// A turn exactly on Monday 00:00 UTC must land in the current (newest) bucket only.
+// It must NOT appear in the prior week's bucket as well (no double-count).
+test('getWeeklyBuckets: Monday 00:00 turn counted once (not in prior week too)', () => {
+  // thisMonday = Jun 22 00:00 UTC (from NOW_JUN22_MID)
+  const t = turn({ timestamp: '2026-06-22T00:00:00Z', input_tokens: 500, output_tokens: 0 });
+  const bkts = getWeeklyBuckets([t], 12, NOW_JUN22_MID);
+  const newest = bkts[bkts.length - 1];       // Jun 22-28 (current)
+  const secondNewest = bkts[bkts.length - 2]; // Jun 15-21 (prior)
+  eq(newest.total_tokens, 500);
+  eq(secondNewest.total_tokens, 0); // must not appear in prior week
+});
+
+// A zero-activity week in a set that has other active weeks must still appear
+// (not dropped or skipped — dump §8.2 says zero-activity weeks are faded, not hidden).
+test('getWeeklyBuckets: zero-activity week present among non-zero weeks (not dropped)', () => {
+  // Put a turn in the current week and another 2 weeks back; the week in between should
+  // appear with total_tokens=0.
+  const cur  = turn({ timestamp: '2026-06-23T10:00:00Z', input_tokens: 100, output_tokens: 0 }); // Jun 22-28
+  const skip = turn({ timestamp: '2026-06-09T10:00:00Z', input_tokens: 200, output_tokens: 0 }); // Jun 8-14 (two back)
+  const bkts = getWeeklyBuckets([cur, skip], 12, NOW_JUN22_MID);
+  eq(bkts.length, 12);
+  // Jun 15-21 is the second-newest (bkts[10]) — no turn in that week
+  const gapWeek = bkts[bkts.length - 2]; // Jun 15-21
+  eq(gapWeek.total_tokens, 0);
+  // But it's still in the array (12 buckets, not 11)
+  const active = bkts.filter(b => b.total_tokens > 0);
+  eq(active.length, 2);
+});
+
+// n=1 returns exactly one bucket and it is the current week
+test('getWeeklyBuckets: n=1 returns exactly 1 bucket (current week)', () => {
+  const bkts = getWeeklyBuckets([], 1, NOW_JUN22_MID);
+  eq(bkts.length, 1);
+  // The single bucket's start should be thisMonday (Jun 22 00:00 UTC)
+  const expectedStart = new Date(getMondayUTC(NOW_JUN22_MID)).toISOString();
+  eq(bkts[0].start_iso, expectedStart);
+});
+
+// ----------------------------------------------------------------
+// aggregateMonths — additional gaps
+// ----------------------------------------------------------------
+
+// When month_key field is absent, fall back to timestamp.substring(0,7)
+test('aggregateMonths: absent month_key falls back to timestamp.substring(0,7)', () => {
+  // Construct a turn without month_key property at all
+  const t = {
+    session_id: 'sess-1',
+    timestamp: '2026-05-20T10:00:00Z',
+    // month_key deliberately omitted
+    model: 'claude-sonnet-3-7',
+    input_tokens: 300,
+    output_tokens: 100,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+  };
+  const months = aggregateMonths([t]);
+  eq(months.length, 1);
+  eq(months[0].month_key, '2026-05'); // derived from timestamp
+  eq(months[0].total_tokens, 400);
+});
+
+// haiku dominates → top_model = 'haiku'
+test('aggregateMonths: top_model = haiku when haiku has most tokens', () => {
+  const haiku  = turn({ model: 'claude-haiku-3-5',  month_key: '2026-06', input_tokens: 5000, output_tokens: 0 });
+  const opus   = turn({ model: 'claude-opus-4-5',   month_key: '2026-06', input_tokens: 100,  output_tokens: 0 });
+  const sonnet = turn({ model: 'claude-sonnet-3-7', month_key: '2026-06', input_tokens: 200,  output_tokens: 0 });
+  const [m] = aggregateMonths([haiku, opus, sonnet]);
+  eq(m.top_model, 'haiku');
+});
+
+// sonnet tie vs haiku → sonnet wins (sonnet comes before haiku in ranked array)
+test('aggregateMonths: sonnet/haiku tie → sonnet wins (stable order)', () => {
+  const sonnet = turn({ model: 'claude-sonnet-3-7', month_key: '2026-06', input_tokens: 1000, output_tokens: 0 });
+  const haiku  = turn({ model: 'claude-haiku-3-5',  month_key: '2026-06', input_tokens: 1000, output_tokens: 0 });
+  const [m] = aggregateMonths([sonnet, haiku]);
+  eq(m.top_model, 'sonnet');
+});
+
+// cache_read_tokens aggregates correctly across multiple turns in same month
+test('aggregateMonths: cache_read_tokens sums across turns', () => {
+  const t1 = turn({ month_key: '2026-06', input_tokens: 100, output_tokens: 0, cache_read_tokens: 200 });
+  const t2 = turn({ month_key: '2026-06', input_tokens: 100, output_tokens: 0, cache_read_tokens: 300, timestamp: '2026-06-20T10:00:00Z' });
+  const [m] = aggregateMonths([t1, t2]);
+  eq(m.cache_read_tokens, 500);
+});
+
+// ----------------------------------------------------------------
+// getBillingCycles — additional gaps
+// ----------------------------------------------------------------
+
+// Turn exactly ON the cycle start date must be included (half-open: >= startIso)
+test('getBillingCycles: turn on cycle start date IS included', () => {
+  // billing_start=1, now=Jun28 → current cycle starts Jun 1 00:00 UTC
+  const onStart = turn({ timestamp: '2026-06-01T00:00:00Z', input_tokens: 777, output_tokens: 0 });
+  const cycles = getBillingCycles([onStart], 1, JUN_28);
+  eq(cycles[0].total_tokens, 777);
+});
+
+// Turn one ms before cycle start must NOT be included (it falls in the prior cycle)
+test('getBillingCycles: turn one ms before cycle start is excluded from current', () => {
+  // billing_start=1, now=Jun28 → current cycle starts 2026-06-01T00:00:00.000Z
+  // One ms before = 2026-05-31T23:59:59.999Z → falls in prior cycle
+  const beforeStart = turn({ timestamp: '2026-05-31T23:59:59.999Z', input_tokens: 999, output_tokens: 0 });
+  const cycles = getBillingCycles([beforeStart], 1, JUN_28);
+  // Current cycle (cycles[0]) should have 0 tokens
+  eq(cycles[0].total_tokens, 0);
+  // Prior cycle (cycles[1]) should have the tokens
+  eq(cycles[1].total_tokens, 999);
+});
+
+// Year-boundary rollback: billing_start=15, now=Jan 5 → current cycle started Dec 15 of prior year
+test('getBillingCycles: year-boundary rollback (billing_start=15, now=Jan5)', () => {
+  const JAN_05_2026 = new Date('2026-01-05T12:00:00Z').getTime();
+  const cycles = getBillingCycles([], 15, JAN_05_2026);
+  // Jan 5 < day 15 → current cycle started Dec 15 2025
+  const expectedStart = new Date(Date.UTC(2025, 11, 15)).toISOString(); // Dec 15 2025
+  eq(cycles[0].start_iso, expectedStart);
+  eq(cycles[0].is_current, true);
+});
+
+// Feb cycle: billing_start=1, now=Feb 15 2026 → days_in_cycle = 28 (2026 is non-leap)
+test('getBillingCycles: Feb cycle days_in_cycle = 28 (non-leap 2026)', () => {
+  const FEB_15_2026 = new Date('2026-02-15T12:00:00Z').getTime();
+  const cycles = getBillingCycles([], 1, FEB_15_2026);
+  // Current cycle: Feb 1 → Mar 1 = 28 days (2026 is not a leap year)
+  eq(cycles[0].days_in_cycle, 28);
+});
+
+// billing_start=28 in Feb 2026: cycle Feb 28 → Mar 28 = 28 days
+test('getBillingCycles: billing_start=28, now=Feb28 2026 → days_in_cycle=28 (Feb28→Mar28)', () => {
+  // now = Feb 28 2026 12:00 UTC. Day 28 >= bsd 28 → cycle started Feb 28.
+  // nextMs = Date.UTC(2026, 1, 29) = JS normalizes to Mar 1? No: Date.UTC(2026, 1, 29)
+  // Feb has 28 days in 2026 (non-leap), so day 29 overflows → Mar 1.
+  // days = (Mar 1 - Feb 28) = 1 day? That can't be right for "Feb 28 → Mar 28".
+  // Let me check: Date.UTC(2026, 1+1, 28) = Date.UTC(2026, 2, 28) = Mar 28.
+  // The code uses: nextMs = Date.UTC(sy, sm + 1, bsd) where sm=1 (Feb), bsd=28
+  // → Date.UTC(2026, 2, 28) = Mar 28 UTC. days = (Mar28 - Feb28) / 86400000 = 28.
+  const nowFeb28 = new Date('2026-02-28T12:00:00Z').getTime();
+  const cycles = getBillingCycles([], 28, nowFeb28);
+  const cur = cycles[0];
+  // Feb 28 → Mar 28 = 28 days
+  eq(cur.days_in_cycle, 28);
+  // start is Feb 28 UTC
+  eq(cur.start_iso, new Date(Date.UTC(2026, 1, 28)).toISOString());
+});
+
+// 4 cycles go back 4 months (newest-first: current + 3 prior)
+test('getBillingCycles: 4 cycles include current + 3 prior, newest first', () => {
+  const cycles = getBillingCycles([], 1, JUN_28);
+  eq(cycles[0].is_current, true);
+  eq(cycles[1].is_current, false);
+  eq(cycles[2].is_current, false);
+  eq(cycles[3].is_current, false);
+  // Verify ordering: each cycle starts earlier than the previous
+  assert.ok(cycles[0].start_iso > cycles[1].start_iso, 'current newer than prior-1');
+  assert.ok(cycles[1].start_iso > cycles[2].start_iso, 'prior-1 newer than prior-2');
+  assert.ok(cycles[2].start_iso > cycles[3].start_iso, 'prior-2 newer than prior-3');
+});
+
+// day_index for billing_start=1, now=Jun28 at noon: floor((noon - Jun1_start) / 86400000) + 1
+// = floor(27.5) + 1 = 27 + 1 = 28
+test('getBillingCycles: day_index = 1 when now is the first day of the cycle', () => {
+  // billing_start=1, now = Jun 1 at noon (well within day 1)
+  const JUN_01_NOON = new Date('2026-06-01T12:00:00Z').getTime();
+  const cycles = getBillingCycles([], 1, JUN_01_NOON);
+  eq(cycles[0].day_index, 1);
+});
+
+// non-current cycles have day_index = null
+test('getBillingCycles: prior cycles have day_index = null', () => {
+  const cycles = getBillingCycles([], 1, JUN_28);
+  eq(cycles[1].day_index, null);
+  eq(cycles[2].day_index, null);
+  eq(cycles[3].day_index, null);
+});
+
+// ----------------------------------------------------------------
+// buildCsvRows — additional gaps
+// ----------------------------------------------------------------
+
+// top_model values ('opus', 'sonnet', 'haiku') contain no commas — confirm the
+// no-escape ponytail is safe for actual model family names.
+test('buildCsvRows: top_model single-word values have no commas (safe without escaping)', () => {
+  const models = ['opus', 'sonnet', 'haiku'];
+  for (const m of models) {
+    const rec = { month_key: '2026-06', total_tokens: 1, input_tokens: 1, output_tokens: 0, cache_read_tokens: 0, sessions: 1, active_days: 1, top_model: m };
+    const row = buildCsvRows([rec]).split('\n')[1];
+    // Each row must have exactly 7 commas (8 columns)
+    const commas = (row.match(/,/g) || []).length;
+    eq(commas, 7);
+    // last field (top_model) must equal the model name
+    const parts = row.split(',');
+    eq(parts[7], m);
+  }
+});
+
+// Raw integers: no thousands separators (e.g. "1500000" not "1,500,000")
+test('buildCsvRows: integer values are raw (no thousands separators)', () => {
+  const rec = { month_key: '2026-06', total_tokens: 1500000, input_tokens: 1000000, output_tokens: 500000, cache_read_tokens: 200000, sessions: 10, active_days: 20, top_model: 'opus' };
+  const row = buildCsvRows([rec]).split('\n')[1];
+  const parts = row.split(',');
+  eq(parts[1], '1500000');  // no "1,500,000"
+  eq(parts[2], '1000000');
+  eq(parts[3], '500000');
+  eq(parts[4], '200000');
+});
+
+// Rows joined by \n (no trailing newline after last row)
+test('buildCsvRows: no trailing newline after last row', () => {
+  const rec = { month_key: '2026-06', total_tokens: 1, input_tokens: 1, output_tokens: 0, cache_read_tokens: 0, sessions: 1, active_days: 1, top_model: 'opus' };
+  const csv = buildCsvRows([rec]);
+  assert.ok(!csv.endsWith('\n'), 'no trailing newline');
+});
+
+// ================================================================
+// CANNOT-VERIFY-HEADLESS: Phase 4 DOM/async wiring confirmed by static inspection
+// 11. recomputeMonthlyCache try/catch in runSync — burnboard.html:~762 wraps the call
+//     in try { await recomputeMonthlyCache(); } catch (e) { console.error(...) }.
+//     The catch does not re-throw, so renderDashboard() and showScreen('app') still
+//     run even if recompute throws. Confirmed by source inspection — cannot exercise
+//     IDB paths under Node.
+// 12. renderHistory called on history tab switch — burnboard.html tab-bar handler:
+//     after panel.classList.add('active'), if (btn.dataset.tab === 'history') renderHistory()
+//     is called. Fire-and-forget (no await). Confirmed by grep of tab handler body.
+// 13. _historyBound flag prevents double-binding — renderHistory() checks _historyBound
+//     before attaching the delegated listener; sets it to true after first attach.
+//     Confirmed by module-level `let _historyBound = false` and guard in renderHistory.
+// 14. account dropdown omitted — no [Account: All ▾] control rendered in renderHistory().
+//     Phase 5 scope. Confirmed by absence of account dropdown HTML in renderHistory body.
+// 15. CSV download via Blob+createObjectURL+<a download> — exportHistoryCsv() creates
+//     Blob([csv], {type:'text/csv'}), URL.createObjectURL, temporary <a> with download
+//     attr, .click(), URL.revokeObjectURL. Confirmed by source inspection.
+// 16. _cfg.billing_start used (not billing_start_day) — getBillingCycles reads
+//     `Number(_cfg.billing_start) || 1` per RESOLVED spec note. Confirmed by grep.
+// ================================================================
+
+// ================================================================
 // Summary
 // ================================================================
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
