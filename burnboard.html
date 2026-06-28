@@ -483,7 +483,7 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 // SELF-CHECK — pure logic assertions, runs on load in browser console
 // Covers Start Check state machine (dump 7.1) and isPeakHour (dump 14)
 // ================================================================
-(function selfCheck() {
+function selfCheck() {
   function _isPeak(ts) {
     const d = new Date(ts), day = d.getUTCDay(), h = d.getUTCHours();
     if (day === 0 || day === 6) return false;
@@ -537,7 +537,7 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
   const _sc_tp = tipPersonalization([], Date.now());
   console.assert(Object.values(_sc_tp).every(v => v === null), 'SC26: tipPersonalization empty → all generic');
   console.log('[BurnBoard] self-check passed');
-})();
+}
 
 // ================================================================
 // IDB LAYER (dump 13.1)
@@ -3187,6 +3187,7 @@ async function pickFolder() {
 // ================================================================
 // BOOT (dump 5.1)
 // ================================================================
+selfCheck(); // runs after all module globals (e.g. _cfg) are initialized — avoids TDZ on load
 (async function boot() {
   await openDB();
   await loadConfig();

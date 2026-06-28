@@ -149,3 +149,9 @@ note: 4 mono wraps confirmed (matches phase 3 convention), test parity holds (su
 ## 2026-06-28 01:43 — product-qa · feature: phase-5-6-combined
 status: QA PASS
 note: 288/288, all 12 acceptance items (phase 5 + 6) pass, no defects. account flow correct, dashboard always combined, tips mono-wrapped, whats-coming zero network, reduced-motion global block. NO roadmap item unimplemented across all 6 phases.
+
+## 2026-06-28 02:?? — HOTFIX · blank-page bug (live browser load)
+symptom: opening burnboard.html showed a blank page (only bg painted).
+root cause: selfCheck() IIFE at top of script (line 486) read module-global `_cfg` (line 528, added in phase 5+6 for twoAccountMode test) BEFORE its `let _cfg=null` declaration (line 654) → TDZ ReferenceError → entire script halted before boot() → no screen rendered.
+why gates missed it: node --check = syntax only (TDZ is runtime); burnboard.test.js runs a separate copy of pure fns, never the inline selfCheck IIFE; reviewer/QA static-inspected; live browser load never run (chrome extension not connected).
+fix: converted selfCheck IIFE to a hoisted function declaration, invoke it just before boot() (after all module globals initialized). verified by executing the real inline script under a node DOM/IDB stub harness: self-check passes, no throw, boot reaches connect-screen.
