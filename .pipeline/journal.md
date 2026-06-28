@@ -155,3 +155,6 @@ symptom: opening burnboard.html showed a blank page (only bg painted).
 root cause: selfCheck() IIFE at top of script (line 486) read module-global `_cfg` (line 528, added in phase 5+6 for twoAccountMode test) BEFORE its `let _cfg=null` declaration (line 654) → TDZ ReferenceError → entire script halted before boot() → no screen rendered.
 why gates missed it: node --check = syntax only (TDZ is runtime); burnboard.test.js runs a separate copy of pure fns, never the inline selfCheck IIFE; reviewer/QA static-inspected; live browser load never run (chrome extension not connected).
 fix: converted selfCheck IIFE to a hoisted function declaration, invoke it just before boot() (after all module globals initialized). verified by executing the real inline script under a node DOM/IDB stub harness: self-check passes, no throw, boot reaches connect-screen.
+
+## 2026-06-28 02:?? — process improvement · smoke layer added
+added burnboard.smoke.js (loads REAL inline script under DOM/IDB stub, asserts boot reaches a screen, throws=fail). proven: passes on fix, FAILS on reintroduced TDZ bug. added learning_while_building + PM_translations docs. updated global tester agent (~/.claude/agents/tester.md) step 5: smoke-test the real artifact, not copies — load-time throw = STATUS: FAIL.
