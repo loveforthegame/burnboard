@@ -10,6 +10,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <!-- ponytail: CDN-pinned to major v4. Offline use breaks charts; upgrade path = vendor the file inline if offline support is ever required. -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<!-- Motion: vanilla DOM animation library from the Framer Motion author. CDN-pinned to major v11. -->
+<script src="https://cdn.jsdelivr.net/npm/motion@11/dist/motion.min.js"></script>
 <style>
 /* === Design System (dump 4.1) === */
 :root {
@@ -39,8 +41,8 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .mono{font-family:'JetBrains Mono',monospace}
 
 /* Cards (dump 4.4) */
-.card{background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:20px 24px;transition:border-color .2s,transform .2s}
-.card:hover{border-color:var(--bdr2);transform:translateY(-1px)}
+.card{background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:20px 24px;transition:border-color .2s,transform .2s,box-shadow .2s}
+.card:hover{border-color:var(--bdr2);transform:translateY(-1px);box-shadow:0 6px 24px rgba(249,115,22,.06)}
 /* State-colored cards: left border + dim bg overlay */
 .card-green{border-left:2px solid var(--green);background:linear-gradient(var(--gdim),var(--gdim)),var(--s1)}
 .card-amber{border-left:2px solid var(--amber);background:linear-gradient(var(--amdim),var(--amdim)),var(--s1)}
@@ -52,8 +54,10 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .btn-primary{background:var(--accent);color:#000;border:none;border-radius:10px;padding:14px 28px;font-family:'Outfit',sans-serif;font-weight:600;font-size:15px;cursor:pointer;transition:filter .15s,transform .15s,box-shadow .15s}
 .btn-primary:hover{filter:brightness(1.08);transform:translateY(-1px);box-shadow:0 4px 20px rgba(249,115,22,.35)}
 .btn-primary:disabled{opacity:.4;cursor:not-allowed;transform:none;filter:none;box-shadow:none}
-.btn-secondary{background:var(--s2);border:1px solid var(--bdr);color:var(--mu);border-radius:8px;padding:6px 14px;font-family:'Outfit',sans-serif;font-weight:500;font-size:13px;cursor:pointer;transition:border-color .15s,color .15s}
+.btn-primary:active:not(:disabled){transform:scale(.97) translateY(0) !important;box-shadow:none !important;filter:brightness(.92) !important;transition-duration:.05s !important}
+.btn-secondary{background:var(--s2);border:1px solid var(--bdr);color:var(--mu);border-radius:8px;padding:6px 14px;font-family:'Outfit',sans-serif;font-weight:500;font-size:13px;cursor:pointer;transition:border-color .15s,color .15s,transform .1s}
 .btn-secondary:hover{border-color:var(--bdr2);color:var(--text)}
+.btn-secondary:active{transform:scale(.97);transition-duration:.05s !important}
 
 /* Screens */
 .screen{display:none;position:relative;z-index:2}
@@ -107,7 +111,8 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .tab-btn.active{color:var(--text);border-bottom-color:var(--accent)}
 .tab-panels{flex:1}
 .tab-panel{display:none;padding:32px 24px}
-.tab-panel.active{display:block}
+@keyframes panelIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.tab-panel.active{display:block;animation:panelIn .18s cubic-bezier(.2,0,0,1) forwards}
 .dashboard-content{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
 
 /* Start Check (dump 7.1) */
@@ -152,7 +157,7 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 /* Settings Overlay (dump 12) */
 .overlay-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50}
 .overlay-backdrop.open{display:block}
-.settings-panel{position:fixed;top:0;right:0;width:360px;max-width:100vw;height:100vh;background:var(--s1);border-left:1px solid var(--bdr);z-index:51;padding:32px 28px;overflow-y:auto;transform:translateX(100%);transition:transform .25s ease}
+.settings-panel{position:fixed;top:0;right:0;width:360px;max-width:100vw;height:100vh;background:var(--s1);border-left:1px solid var(--bdr);z-index:51;padding:32px 28px;overflow-y:auto;transform:translateX(100%);transition:transform .32s cubic-bezier(.2,0,0,1)}
 .settings-panel.open{transform:translateX(0)}
 .settings-title{font-size:18px;font-weight:700;margin-bottom:24px}
 .settings-field{margin-bottom:20px}
@@ -172,15 +177,15 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
 .c-text {color:var(--text)}
 .c-mu   {color:var(--mu)}
 
-/* Entrance animations (dump 4.6) */
-@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.au{opacity:0;animation:fadeUp .5s ease forwards}
+/* Entrance animations (Framer Motion–style spring easing) */
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.au{opacity:0;animation:fadeUp .4s cubic-bezier(.2,0,0,1) forwards}
 .d0{animation-delay:0ms}
-.d1{animation-delay:80ms}
-.d2{animation-delay:160ms}
-.d3{animation-delay:240ms}
-.d4{animation-delay:320ms}
-.d5{animation-delay:400ms}
+.d1{animation-delay:50ms}
+.d2{animation-delay:100ms}
+.d3{animation-delay:150ms}
+.d4{animation-delay:200ms}
+.d5{animation-delay:250ms}
 
 /* Phase 2 — filter bar + charts (dump 4.5, 7.4, 7.6, 7.7, 7.8) */
 .btn-secondary.sel{border-color:var(--accent);color:var(--accent)}
@@ -273,11 +278,15 @@ body::after{content:'';position:fixed;inset:0;opacity:.022;pointer-events:none;z
   .au{opacity:1 !important}
 }
 /* Toast */
-#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--s4);border:1px solid var(--bdr2);border-radius:10px;padding:10px 20px;font-size:13px;color:var(--text);opacity:0;pointer-events:none;z-index:99;white-space:nowrap}
-#toast.show{opacity:1;animation:fadeUp .2s ease forwards}
+@keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(14px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+@keyframes toastOut{to{opacity:0;transform:translateX(-50%) translateY(8px)}}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(0);background:var(--s4);border:1px solid var(--bdr2);border-radius:10px;padding:10px 20px;font-size:13px;color:var(--text);opacity:0;pointer-events:none;z-index:99;white-space:nowrap;transition:opacity .18s ease}
+#toast.show{opacity:1;pointer-events:auto;animation:toastIn .3s cubic-bezier(.34,1.56,.64,1) forwards}
+#toast.hide{animation:toastOut .18s ease forwards}
 /* Account prompt modal */
+@keyframes modalIn{from{opacity:0;transform:translate(-50%,-46%) scale(.97)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
 .modal-center{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--s1);border:1px solid var(--bdr);border-radius:14px;padding:24px 28px;z-index:51;max-width:380px;width:90%;display:none}
-.modal-center.open{display:block}
+.modal-center.open{display:block;animation:modalIn .25s cubic-bezier(.34,1.56,.64,1) forwards}
 .modal-center h3{font-size:14px;font-weight:600;margin-bottom:16px;color:var(--mu)}
 .modal-prompt-btns{display:flex;flex-direction:column;gap:10px}
 /* Reconnect screen */
@@ -769,9 +778,10 @@ function buildWindows(allTurns) {
     w.total_input_tokens  += t.input_tokens;
     w.total_output_tokens += t.output_tokens;
     const fam = modelFamily(t.model);
-    if (fam==='opus')   w.opus_tokens   += t.input_tokens + t.output_tokens;
-    if (fam==='sonnet') w.sonnet_tokens += t.input_tokens + t.output_tokens;
-    if (fam==='haiku')  w.haiku_tokens  += t.input_tokens + t.output_tokens;
+    const allTok = t.input_tokens + (t.cache_creation_tokens||0) + (t.cache_read_tokens||0) + t.output_tokens;
+    if (fam==='opus')   w.opus_tokens   += allTok;
+    if (fam==='sonnet') w.sonnet_tokens += allTok;
+    if (fam==='haiku')  w.haiku_tokens  += allTok;
     w.turn_count++;
   }
   if (w) wins.push(w);
@@ -1155,11 +1165,15 @@ async function loadDataLocal() {
   const hasTurns   = allTurns.length > 0;
 
   // Weekly cap (dump 15.2)
+  // ponytail: count all token types — input + cache_creation + cache_read + output.
+  // cache_creation tokens are billed at full rate; cache_read at ~10% but still
+  // consume from your plan budget. Ignoring them causes the cap % to read ~3x too low.
   const mondayTs = getMondayUTC(now);
   let opusTokens = 0, sonnetTokens = 0;
   for (const t of allTurns) {
     if (new Date(t.timestamp).getTime() < mondayTs) continue;
-    const fam = modelFamily(t.model), tot = t.input_tokens + t.output_tokens;
+    const fam = modelFamily(t.model);
+    const tot = t.input_tokens + (t.cache_creation_tokens || 0) + (t.cache_read_tokens || 0) + t.output_tokens;
     if (fam === 'opus')   opusTokens   += tot;
     if (fam === 'sonnet') sonnetTokens += tot;
   }
@@ -1174,7 +1188,9 @@ async function loadDataLocal() {
     .sort((a,b) => b.window_start > a.window_start ? 1 : -1);
   const curWin          = active[0] || null;
   const winStartMs      = curWin ? new Date(curWin.window_start).getTime() : null;
-  const winRemainingMs  = curWin ? WIN_MS - (now - winStartMs) : WIN_MS;
+  // ponytail: null when no active session — callers must check curWin before rendering.
+  // Previously fell back to WIN_MS (5h) which showed "5:00:00 remaining" with no session active.
+  const winRemainingMs  = curWin ? WIN_MS - (now - winStartMs) : null;
   const winStartedMins  = curWin ? Math.floor((now - winStartMs) / 60000) : null;
 
   // Today vs Avg (ORIGINATED; ponytail: UTC date for "today" matches UTC bucketing used throughout)
@@ -1182,7 +1198,7 @@ async function loadDataLocal() {
   const ago30    = now - 30 * 86400000;
   let todayTok = 0, last30Tok = 0;
   for (const t of allTurns) {
-    const tot = t.input_tokens + t.output_tokens;
+    const tot = t.input_tokens + (t.cache_creation_tokens||0) + (t.cache_read_tokens||0) + t.output_tokens;
     if (t.timestamp.substring(0,10) === todayUTC) todayTok  += tot;
     if (new Date(t.timestamp).getTime() >= ago30)  last30Tok += tot;
   }
@@ -2660,9 +2676,20 @@ function showToast(msg) {
   const el = document.getElementById('toast');
   if (!el) return;
   el.innerHTML = msg;
+  el.classList.remove('hide');
   el.classList.add('show');
   clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.remove('show'), 3000);
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el._t = setTimeout(() => {
+    if (reducedMotion) {
+      el.classList.remove('show', 'hide');
+    } else {
+      el.classList.add('hide');
+      el.addEventListener('animationend', () => {
+        el.classList.remove('show', 'hide');
+      }, { once: true });
+    }
+  }, 3000);
 }
 
 // promptAccount: returns a Promise<string> resolving to the chosen account label.
@@ -2938,12 +2965,19 @@ function renderStartCheck(d) {
       break;
     case 'good':
       headline = 'good time to start.';
-      body     = `off-peak right now. <span class="mono">${fmtDur(winRemainingMs)}</span> left in window. <span class="mono">${Math.round(100 - opusPct)}</span>% of weekly opus remaining. go build.`;
+      body     = `off-peak right now.${winRemainingMs !== null ? ` <span class="mono">${fmtDur(winRemainingMs)}</span> left in session window.` : ''} <span class="mono">${Math.round(100 - opusPct)}</span>% of weekly opus remaining. go build.`;
       break;
   }
 
   const cardCls = col === 'muted' ? 'card-muted' : `card-${col}`;
-  const winColorCls = winRemainingMs > 2*3600000 ? 'c-green' : winRemainingMs > 3600000 ? 'c-amber' : 'c-red';
+  const winColorCls = winRemainingMs === null ? 'c-mu'
+    : winRemainingMs > 2*3600000 ? 'c-green'
+    : winRemainingMs > 3600000   ? 'c-amber' : 'c-red';
+
+  const winDisplay = winRemainingMs !== null
+    ? fmtDur(winRemainingMs)
+    : '—';
+  const winSubLabel = winRemainingMs !== null ? 'session window left' : 'no active session';
 
   return `<div class="card ${cardCls} start-check-card au d0">
     <div class="start-check-left">
@@ -2955,8 +2989,8 @@ function renderStartCheck(d) {
       <div class="start-check-body">${body}</div>
     </div>
     <div class="start-check-right">
-      <div class="window-val">${fmtDur(winRemainingMs)}</div>
-      <div class="window-label" style="color:${dotColor}">window remaining</div>
+      <div class="window-val ${winColorCls}">${winDisplay}</div>
+      <div class="window-label" style="color:${dotColor}">${winSubLabel}</div>
       ${winStartedMins !== null
         ? `<div class="window-sub">started <span class="mono">${winStartedMins}</span>m ago</div>`
         : ''}
@@ -2967,15 +3001,17 @@ function renderStartCheck(d) {
 function renderMiniStats(d) {
   const { winRemainingMs, opusPct, sonnetPct, todayVsAvg, winStartedMins } = d;
   const wCap = Math.round(Math.max(opusPct, sonnetPct));
-  const wCol  = winRemainingMs > 2*3600000 ? 'c-green' : winRemainingMs > 3600000 ? 'c-amber' : 'c-red';
+  const wCol  = winRemainingMs === null ? 'c-mu'
+    : winRemainingMs > 2*3600000 ? 'c-green'
+    : winRemainingMs > 3600000   ? 'c-amber' : 'c-red';
   const cCol  = capColor(wCap) === 'green' ? 'c-green' : capColor(wCap) === 'amber' ? 'c-amber' : 'c-red';
   const aCol  = todayVsAvg <= 1.0 ? 'c-green' : todayVsAvg <= 2.0 ? 'c-amber' : 'c-red';
 
   return `<div class="mini-stats">
-    <div class="card stat-card au d1" data-tip="Time left in your 5-hour rolling window. Starts on your first message. Resets 5 hours later, not at midnight.">
-      <div class="stat-label">CURRENT WINDOW</div>
-      <div class="stat-value ${wCol}">${fmtDur(winRemainingMs)}</div>
-      <div class="stat-sub">${winStartedMins !== null ? `started <span class="mono">${winStartedMins}</span>m ago` : 'no active window'}</div>
+    <div class="card stat-card au d1" data-tip="Time left in your current session window (~5h from first message). Shows '—' when no session is active in the last 5 hours.">
+      <div class="stat-label">SESSION WINDOW</div>
+      <div class="stat-value ${wCol}">${winRemainingMs !== null ? fmtDur(winRemainingMs) : '—'}</div>
+      <div class="stat-sub">${winStartedMins !== null ? `started <span class="mono">${winStartedMins}</span>m ago` : 'no active session'}</div>
     </div>
     <div class="card stat-card au d2" data-tip="Estimated % of your 7-day model cap used. Community estimates — not official Anthropic numbers.">
       <div class="stat-label">WEEKLY CAP</div>
@@ -3085,6 +3121,9 @@ document.getElementById('dashboard-content').addEventListener('click', async e =
     const detailRow = document.getElementById(`detail-${sid}`);
     if (!detailRow) return;
 
+    const _rmPrefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const _motionOk = typeof Motion !== 'undefined' && !_rmPrefersReducedMotion;
+
     // Close the previously open row if different
     if (_openSession && _openSession !== sid) {
       const prevDetail = document.getElementById(`detail-${_openSession}`);
@@ -3095,11 +3134,22 @@ document.getElementById('dashboard-content').addEventListener('click', async e =
 
     if (_openSession === sid) {
       // Second click on same row → close it
-      detailRow.style.display = 'none';
+      if (_motionOk) {
+        Motion.animate(detailRow, { opacity: [1, 0], transform: ['translateY(0px)', 'translateY(-4px)'] },
+          { duration: 0.15, easing: [0.4, 0, 1, 1] }).finished.then(() => {
+          detailRow.style.display = 'none';
+        });
+      } else {
+        detailRow.style.display = 'none';
+      }
       row.classList.remove('open');
       _openSession = null;
     } else {
       detailRow.style.display = '';
+      if (_motionOk) {
+        Motion.animate(detailRow, { opacity: [0, 1], transform: ['translateY(-6px)', 'translateY(0px)'] },
+          { duration: 0.22, easing: [0.2, 0, 0, 1] });
+      }
       row.classList.add('open');
       _openSession = sid;
       // Lazily render turn detail — load filtered data for turns_by_session
